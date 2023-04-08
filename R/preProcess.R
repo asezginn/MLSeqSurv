@@ -1,4 +1,5 @@
-# These functions need to be documented and relabeled appopriately.
+# These functions need to be documented and relabeled appropriately.
+# Will there be variance filtering? If there is going to be variance filtering, what is the cutoff
 #### Functions necessary for Preproecessing ####
 
 arrayWeights <- function(object, design=NULL, weights=NULL, var.design=NULL, var.group=NULL, prior.n=10,
@@ -493,32 +494,185 @@ voomWithQualityWeights_ahu <- function(data.train, data.test, design=NULL, lib.s
 }
 
 
-donusum <- voomWithQualityWeights_ahu(train_matrix, test_matrix, design=NULL, lib.size=NULL, normalize.method="deseq", plot=FALSE,
-                                      span=0.5, var.design=NULL, var.group=NULL, maxiter=50, tol=1e-5,
-                                      trace=FALSE, col=NULL, method = "genebygene")
-
 
 #### Preprocessing function ####
 
-preprocess <- function(data, method){
+# data will be in the split form already
+
+preprocess <- function(data, norm_trans = "deseq-vst", filterGene = FALSE, filterVariance = FALSE, varianceAmount = 1000){
 
   if (is.null(method)){
-    print("Preprocess method not specified. Using the original data without any preprocessing")
+    cat("Preprocess method not specified. Using the original data without any preprocessing")
     return(data)
   }
 
-  if (method == "deseq"){
+  if (method == "deseq-voom"){
 
-    ### apply deseq preprocessing steps here
+    ### apply deseq-vst preprocessing steps here
+
+    train_data <- data@train
+    test_data <- data@test
+
+    ### Extract columns of time and status from train dataset ###
+    cols_t <- as.vector(colnames(train_data))
+    cols_train <- cols_t[! cols_t %in% c('time', 'status')]
+    cols_train <- as.vector(cols_train)
+    train_d <- subset(train_data, select=cols_train)
+
+    ### Extract columns of time and status from test dataset ###
+    cols_te <- as.vector(colnames(test_data))
+    cols_test <- cols_te[! cols_te %in% c('time', 'status')]
+    cols_test <- as.vector(cols_test)
+    test_d <- subset(test_data, select=cols_test)
+
+    ### Transpose train and test datasets ###
+    train_matrix <- as.matrix(t(train_d))
+    test_matrix <- as.matrix(t(test_d))
+
+    #### Normalization and transportation ####
+    norm.method <- "deseq"
+    group <- c(rep(1,ncol(train_matrix)))
+    #design = ~1
+    lib.size = NULL
+    span = 0.5
+
+    transformation <- voomWithQualityWeights_ahu(train_matrix, test_matrix, design=NULL, lib.size=NULL, normalize.method="deseq", plot=FALSE,
+                                          span=0.5, var.design=NULL, var.group=NULL, maxiter=50, tol=1e-5,
+                                          trace=FALSE, col=NULL, method = "genebygene")
+    sirala <- transformation$siralama
+    cv_train <- t(input_tr)[sirala[1:2000],]
+    cv_test <- t(input_ts)[sirala[1:2000],]
+
+    #### Creating final version of train and test datasets ####
+    tvsd_train2 <- as.data.frame(cbind(train_ind, train_data$time, train_data$status, t(cv_train), train_W))
+    tvsd_test2 <- as.data.frame(cbind(test_ind, test_data$time, test_data$status, t(cv_test)))
+    names(tvsd_train2)[names(tvsd_train2) == "V2"] <- "time"
+    names(tvsd_train2)[names(tvsd_train2) == "V3"] <- "status"
+    names(tvsd_train2)[names(tvsd_train2) == "train_ind"] <- "sirano"
+    names(tvsd_train2)[names(tvsd_train2) == "train_W2"] <- "weight"
+    tvsd_train2$time <- as.integer(tvsd_train2$time)
+    tvsd_train2$status <- as.integer(tvsd_train2$status)
+    tvsd_train2$sirano <- as.integer(tvsd_train2$sirano)
+    tvsd_train2[] <- apply(tvsd_train2, 2, function(x) as.double((x)))
+
+
+    names(tvsd_test2)[names(tvsd_test2) == "V2"] <- "time"
+    names(tvsd_test2)[names(tvsd_test2) == "V3"] <- "status"
+    names(tvsd_test2)[names(tvsd_test2) == "test_ind"] <- "sirano"
+    tvsd_test2$time <- as.integer(tvsd_test2$time)
+    tvsd_test2$status <- as.integer(tvsd_test2$status)
+    tvsd_test2$sirano <- as.integer(tvsd_test2$sirano)
+    tvsd_test2[] <- apply(tvsd_test2, 2, function(x) as.double((x)))
 
 
     return(data)
   }
 
-  else if (method == "voom"){
+  else if (method == "deseq-vst"){
 
-    ### apply voom preprocessing steps here
+    ### apply deseq-vst preprocessing steps here
 
+    # change function names to lasso
+
+
+    train_data <- data@train
+    test_data <- data@test
+
+    cols_t <- as.vector(colnames(train_data))
+    cols_train <- cols_t[! cols_t %in% c('time', 'status')]
+    cols_train <- as.vector(cols_train)
+    train_d <- subset(train_data, select=cols_train)
+
+    cols_te <- as.vector(colnames(test_data))
+    cols_test <- cols_te[! cols_te %in% c('time', 'status')]
+    cols_test <- as.vector(cols_test)
+    test_d <- subset(test_data, select=cols_test)
+
+    train_matrix <- as.matrix(t(train_d))
+    test_matrix <- as.matrix(t(test_d))
+
+    #### near-zero variance filtering ####
+
+    dds_tr <- DESeqDataSetFromMatrix(countData = train_matrix,
+                                     colData = as.data.frame(colnames(train_matrix)),
+                                     design = ~ 1)
+    keep_tr <- rowSums(counts(dds_tr)) >= 10
+    dds_tr <- dds_tr[keep_tr,]
+    dds_ts <- DESeqDataSetFromMatrix(countData = test_matrix,
+                                     colData = as.data.frame(colnames(test_matrix)),
+                                     design = ~ 1)
+    dds_ts <- dds_ts[keep_tr,]
+
+    #### train set ####
+    normalization <- "deseq"
+    transformation <- "vst"
+
+    dataSF_tr <- estimateSizeFactors(dds_tr)    # Estimate Size factors:
+    dataDisp_tr <- estimateDispersions(dataSF_tr, fitType = "local")  # Estimate dispersions:
+    transformedData_tr <- varianceStabilizingTransformation(dataDisp_tr, fitType = "local")
+
+    dataVST_tr <- t(as.matrix(assay(transformedData_tr)))
+    input_tr <- dataVST_tr   ## Input data from transformed expression data.
+
+    trainParameters_tr <- list(disperFunc = dispersionFunction(dataDisp_tr),
+                               sizeFactors = sizeFactors(dataDisp_tr))
+
+    #### test set ####
+    #Calculation of test set size factors using geometric means from training data
+    #Genes in the row, samples in the column
+    geomts = test_matrix / exp(rowMeans(log(train_matrix+0.5)))   ## Geometric mean of test data using estimators from train data
+    sizeF.ts = apply(geomts, 2, function(x) median(x))
+
+    test.dataSF <- estimateSizeFactors(dds_ts)    # Estimate Size factors:
+    sizeFactors(test.dataSF) <- sizeF.ts             # Replace size factors with size factors which are estimates using train set parameters.
+
+    ## Change dispersion function of test data with dispersion function of train data
+    dispersionFunction(test.dataSF) <- trainParameters_tr$disperFunc
+
+    transformedData <- varianceStabilizingTransformation(test.dataSF, fitType = "local", blind = FALSE)
+
+    dataVST <- t(as.matrix(assay(transformedData)))
+    input_ts <- dataVST   ## Input data from transformed expression data.
+
+    input_tr_nzv <- nearZeroVar(input_tr, saveMetrics = FALSE)
+    input_tr <- input_tr[,-as.vector(input_tr_nzv)]
+    input_ts <- input_ts[,-as.vector(input_tr_nzv)]
+
+
+    ss = apply(t(input_tr),1,sd)
+    ort = apply(t(input_tr),1,mean)
+    cv = ss/ort
+    siralama = order(cv, decreasing = TRUE)
+    cv_train <- t(input_tr)[siralama[1:1900],]
+    cv_test <- t(input_ts)[siralama[1:1900],]
+
+    tvsd_train2 <- as.data.frame(cbind(train_ind, satir[as.vector(train_ind),][,3:4], t(cv_train)))
+    tvsd_test2 <- as.data.frame(cbind(test_ind, satir[as.vector(test_ind),][,3:4], t(cv_test)))
+    #comp <- as.data.frame(rbind(tvsd_train2,tvsd_test2))
+    names(tvsd_train2)[names(tvsd_train2) == "V2"] <- "time"
+    names(tvsd_train2)[names(tvsd_train2) == "V3"] <- "status"
+    names(tvsd_train2)[names(tvsd_train2) == "train_ind"] <- "sirano"
+    tvsd_train2$time <- as.integer(tvsd_train2$time)
+    tvsd_train2$status <- as.integer(tvsd_train2$status)
+    tvsd_train2$sirano <- as.integer(tvsd_train2$sirano)
+    # tvsd_train2$sirano <- as.integer(tvsd_train2$sirano)
+    tvsd_train2[] <- apply(tvsd_train2, 2, function(x) as.double((x)))
+
+
+    names(tvsd_test2)[names(tvsd_test2) == "V2"] <- "time"
+    names(tvsd_test2)[names(tvsd_test2) == "V3"] <- "status"
+    names(tvsd_test2)[names(tvsd_test2) == "test_ind"] <- "sirano"
+    tvsd_test2$time <- as.integer(tvsd_test2$time)
+    tvsd_test2$status <- as.integer(tvsd_test2$status)
+    tvsd_test2$sirano <- as.integer(tvsd_test2$sirano)
+    tvsd_test2[] <- apply(tvsd_test2, 2, function(x) as.double((x)))
+
+
+    # Merge all the relevant data into a single S4 object
     return(data)
+  }
+
+  else {
+    cat("Available preprocessing methods are: \"deseq\" and \"voom\".")
   }
 }

@@ -252,7 +252,7 @@ calcNormFactorsGSD <- function(data.train, data.test, lib.size = NULL, method = 
 }
 
 
-voom_ahu <- function(data.train, data.test, design=NULL,lib.size=NULL,normalize.method="none",block=NULL,correlation=NULL,weights=NULL,
+voom_lasso <- function(data.train, data.test, design=NULL,lib.size=NULL,normalize.method="none",block=NULL,correlation=NULL,weights=NULL,
                      span=0.5,plot=FALSE,save.plot=FALSE)
   #	Linear modelling of count data with mean-variance modelling at the observation level.
   #	Creates an EList object for entry to lmFit() etc in the limma pipeline.
@@ -455,7 +455,7 @@ voom_ahu <- function(data.train, data.test, design=NULL,lib.size=NULL,normalize.
   # new("EList",out)
 }
 
-voomWithQualityWeights_ahu <- function(data.train, data.test, design=NULL, lib.size=NULL, normalize.method="none", plot=FALSE, span=0.5,
+voomWithQualityWeights_lasso <- function(data.train, data.test, design=NULL, lib.size=NULL, normalize.method="none", plot=FALSE, span=0.5,
                                        var.design=NULL, var.group=NULL, method="genebygene", maxiter=50, tol=1e-5, trace=FALSE,
                                        col=NULL, ...)
   #	Combine voom weights with sample-specific weights estimated by arrayWeights() function for RNA-seq data
@@ -469,13 +469,13 @@ voomWithQualityWeights_ahu <- function(data.train, data.test, design=NULL, lib.s
   # }
 
   #	Voom without array weights
-  v <- voom_ahu(data.train,data.test, design=design, lib.size=lib.size, normalize.method=normalize.method, plot=FALSE, span=span, ...)
+  v <- voom_lasso(data.train,data.test, design=design, lib.size=lib.size, normalize.method=normalize.method, plot=FALSE, span=span, ...)
 
   #	Estimate array weights on top of voom weights
   aw <- limma::arrayWeights(v, design=design, method=method, maxiter=maxiter, tol=tol, var.design=var.design, var.group=var.group)
 
   #	Update voom weights now using the array weights, plotting trend if requested
-  v <- voom_ahu(data.train,data.test, design=design, weights=aw, lib.size=lib.size, normalize.method=normalize.method, plot=plot, span=span, ...)
+  v <- voom_lasso(data.train,data.test, design=design, weights=aw, lib.size=lib.size, normalize.method=normalize.method, plot=plot, span=span, ...)
 
   #	Update array weights
   aw <- limma::arrayWeights(v, design=design, method=method, maxiter=maxiter, tol=tol, trace=trace, var.design=var.design, var.group=var.group)
@@ -536,7 +536,7 @@ preprocess <- function(data, norm_trans = "deseq-vst", filterGene = FALSE, filte
     lib.size = NULL
     span = 0.5
 
-    transformation <- voomWithQualityWeights_ahu(train_matrix, test_matrix, design=NULL, lib.size=NULL, normalize.method="deseq", plot=FALSE,
+    transformation <- voomWithQualityWeights_lasso(train_matrix, test_matrix, design=NULL, lib.size=NULL, normalize.method="deseq", plot=FALSE,
                                           span=0.5, var.design=NULL, var.group=NULL, maxiter=50, tol=1e-5,
                                           trace=FALSE, col=NULL, method = "genebygene")
     sirala <- transformation$siralama
@@ -673,6 +673,6 @@ preprocess <- function(data, norm_trans = "deseq-vst", filterGene = FALSE, filte
   }
 
   else {
-    cat("Available preprocessing methods are: \"deseq\" and \"voom\".")
+    cat("Available preprocessing methods are: \"deseq-vst\" and \"deseq-voom\".")
   }
 }

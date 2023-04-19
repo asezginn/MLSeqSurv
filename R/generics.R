@@ -687,7 +687,7 @@ adjust_stacked_df <- function(stacked_data){
 
 #### All of the generics defined for surv function. ####
 
-surv.ipflasso <- function(data = data, method = "ipflasso", preProcessing = preProcessing, fsParams, atParams, paramGrid, ...){
+surv.ipflasso <- function(data = data, method = "ipflasso", preProcessing = preProcessing,  ...){
 
   data <- preprocess(data, preProcessing)
 
@@ -704,10 +704,9 @@ surv.ipflasso <- function(data = data, method = "ipflasso", preProcessing = preP
   over <- over1[,-(ncol(over1)-2)]
 
   ##### Manipulation of test data ####
-  print("Adjusting test data!")
   summ_stack <- summ_stack[,-(ncol(summ_stack)-1)]
   over_final <- adjust_stacked_df(summ_stack)
-  test_final <- adjust_test_data(tvsd_test3[,-1])
+  test_final <- adjust_test_data(data@test)
   transformed_test <- integrate_test_data(summarized_df = over_final, test_df = test_final, eventCount = event_count)
 
   probVector <- get_matching_probabilities(summ_stack, test_final)
@@ -758,7 +757,7 @@ surv.prioritylasso <- function(data = data, method = "prioritylasso", preProcess
   print("Adjusting test data!")
   summ_stack <- summ_stack[,-(ncol(summ_stack)-1)]
   over_final <- adjust_stacked_df(summ_stack)
-  test_final <- adjust_test_data(tvsd_test3[,-1])
+  test_final <- adjust_test_data(data@test)
   transformed_test <- integrate_test_data(summarized_df = over_final, test_df = test_final, eventCount = event_count)
 
   probVector <- get_matching_probabilities(summ_stack, test_final)

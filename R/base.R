@@ -120,6 +120,13 @@ setMethod("surv", "MLSeqSurv", function(data, method = c("ipflasso", "priorityla
   else if (method == "xgboost_gbtree"){
     surv.xgboost_gbtree(data = data, method = "xgboost_gbtree", preProcessing = preProcessing, paramGrid, ...)
   }
+  else if (method == "ipflasso"){
+    surv.xgboost_gbtree(data = data, method = "ipflasso", preProcessing = preProcessing, paramGrid, ...)
+  }
+  else if (method == "prioritylasso"){
+    surv.xgboost_gbtree(data = data, method = "prioritylasso", preProcessing = preProcessing, paramGrid, ...)
+  }
+
   ### Alternative approach is to call generic methods as soon as we take the input from the user via UseMethod.
   ### This allows this function to be relatively clean block of ifs and the actual work is done inside the methods which can call other generic functions
 

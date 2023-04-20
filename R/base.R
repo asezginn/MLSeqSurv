@@ -46,7 +46,7 @@ setMethod("surv", "MLSeqSurv", function(data, method = c("ipflasso", "priorityla
 
 
   if (method == "blackboost"){
-    surv.blackboost(data = data, method = "blackboost", preProcessing = preProcessing, paramGrid, ...) # Fix the parameters that are being sent once the generic functions are finalized.
+    surv.blackboost(data = data, method = "blackboost", preProcessing = preProcessing, fsParams, atParams, paramGrid, ...) # Fix the parameters that are being sent once the generic functions are finalized.
   }
   else if (method == "cforest"){
     surv.cforest(data = data, method = "cforest", preProcessing = preProcessing, paramGrid, ...)

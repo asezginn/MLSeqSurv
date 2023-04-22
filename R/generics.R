@@ -805,19 +805,19 @@ surv.blackboost <- function(data = data, method = "blackboost", preProcessing = 
   # measures = msrs(c("surv.cindex"))
 
 
-  # fsParams is a list of parameters related to feature selection.
+  # fsParams is a list of lists that contain appropriate parameters for feature selection. These should be available in man page for the function.
   # First element of this list is notable since it can/will contain multiple elements.
   # May need to look into unlisting them from a list format.
   # We can't simply dedicate more elements of the list because the list will contain varying amount of elements depending on the method chosen.
   instance = FSelectInstanceSingleCrit$new(
     task = task_fs,
     learner = learner,
-    resampling = rsmp(fsParams[[1]]),
-    measure = msr(fsParams[[2]]),
-    terminator = trm(fsParams[[3]])
+    resampling = do.call(mlr3::rsmp, fsParams[[1]]),
+    measure = do.call(mlr3::msr, fsParams[[2]]),
+    terminator = do.call(mlr3::trm, fsParams[[3]])
   )
 
-  fselector = fs(fsParams[[4]])
+  fselector = do.call(mlr3::fs, fsParams[[4]])
   fselector$optimize(instance)
 
   features <- as.vector(instance$result_feature_set)
@@ -834,12 +834,15 @@ surv.blackboost <- function(data = data, method = "blackboost", preProcessing = 
   task_tune <- TaskSurv$new("task_tune", data@train, time = "time", event = "status")
 
   tune_ps = ParamSet$new(paramGrid) # It might be better to add the paramGrid directly into the atParams.
+  # This is a very tricky parameter to accept from user
+  # It requires user to have knowledge of mlr3 paramgrids and it also causes a very messy function call
+  # Might be better to simply ignore this for now and give default values.
 
   at=AutoTuner$new(learner=learner,
-                   resampling=rsmp(atParams[[1]]),
-                   measure=msr(atParams[[2]]),
-                   terminator=trm(atParams[[3]]),
-                   tuner=tnr(atParams[[4]]),
+                   resampling=do.call(mlr3::rsmp, atParams[[1]]),
+                   measure = do.call(mlr3::msr, atParams[[2]]),
+                   terminator = do.call(mlr3::trm, atParams[[3]]),
+                   tuner=do.call(mlr3::tnr, atParams[[4]]),
                    search_space = tune_ps
   )
 

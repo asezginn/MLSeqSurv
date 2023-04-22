@@ -499,16 +499,16 @@ voomWithQualityWeights_lasso <- function(data.train, data.test, design=NULL, lib
 
 # data will be in the split form already
 
-preprocess <- function(data, norm_trans = "deseq-vst", filterGene = FALSE, filterVariance = FALSE, varianceAmount = 1000){
+preprocess <- function(data, preProcessing = "deseq-vst", filterGene = FALSE, filterVariance = FALSE, varianceAmount = 1000, ...){
 
-  if (is.null(method)){
+  if (is.null(preProcessing)){
     cat("Preprocess method not specified. Using the original data without any preprocessing")
     return(data)
   }
 
-  if (method == "deseq-voom"){
+  if (preProcessing == "deseq-voom"){
 
-    ### apply deseq-vst preprocessing steps here
+    ### apply deseq-voom preprocessing steps here
 
     train_data <- data@train
     test_data <- data@test
@@ -544,6 +544,7 @@ preprocess <- function(data, norm_trans = "deseq-vst", filterGene = FALSE, filte
     cv_test <- t(input_ts)[sirala[1:2000],]
 
     #### Creating final version of train and test datasets ####
+    # This part needs to be cleaned up
     tvsd_train2 <- as.data.frame(cbind(train_ind, train_data$time, train_data$status, t(cv_train), train_W))
     tvsd_test2 <- as.data.frame(cbind(test_ind, test_data$time, test_data$status, t(cv_test)))
     names(tvsd_train2)[names(tvsd_train2) == "V2"] <- "time"
@@ -563,7 +564,6 @@ preprocess <- function(data, norm_trans = "deseq-vst", filterGene = FALSE, filte
     tvsd_test2$status <- as.integer(tvsd_test2$status)
     tvsd_test2$sirano <- as.integer(tvsd_test2$sirano)
     tvsd_test2[] <- apply(tvsd_test2, 2, function(x) as.double((x)))
-
 
     return(data)
   }

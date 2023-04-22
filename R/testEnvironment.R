@@ -54,12 +54,12 @@ surv.blackboost <- function(data = data, method = "blackboost", preProcessing = 
   instance = FSelectInstanceSingleCrit$new(
     task = task_fs,
     learner = learner,
-    resampling = rsmp(fsParams[[1]]),
-    measure = msr(fsParams[[2]]),
-    terminator = trm(fsParams[[3]])
+    resampling = do.call(mlr3::rsmp, fsParams[[1]]),
+    measure = do.call(mlr3::msr, fsParams[[2]]),
+    terminator = do.call(mlr3::trm, fsParams[[3]])
   )
 
-  fselector = fs(fsParams[[4]])
+  fselector = do.call(mlr3::fs, fsParams[[4]])
   fselector$optimize(instance)
 
   features <- as.vector(instance$result_feature_set)
@@ -95,7 +95,7 @@ surv.blackboost <- function(data = data, method = "blackboost", preProcessing = 
 }
 
 t=AutoTuner$new(learner=learners[[j]],
-                resampling=rsmp("repeated_cv", repeats = 10, folds = 2),
+                resampling=do.call(mlr3::rsmp, list("repeated_cv", repeats = 10, folds = 2)),
                 measure=msr("surv.cindex"),
                 terminator=trm("evals", n_evals = 5),
                 tuner=tnr("random_search"),
@@ -158,4 +158,12 @@ result <- my_outer_function("value1", "value2", param_list)
 # This needs to be tested but it has potential
 # There might be some issues calling the functions like rsmp with do.call since these are syntactic sugar.
 # Following works:
-do.call(mlr3::rsmp, list("repeated_cv", repeats = 10, folds = 2))
+
+fsParams <- list(list("repeated_cv", repeats = 10, folds = 2), list("surv.cindex"))
+obj <-do.call(mlr3::Resampling$new, fsParams[[1]])
+obj <- do.call(mlr3::msr, fsParams[[2]])
+obj
+msr("surv.cindex")
+
+
+obj <- Resampling$new("repeated_cv", repeats = 10, folds = 2)

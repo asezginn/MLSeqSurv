@@ -152,3 +152,25 @@ setMethod("surv", "MLSeqSurv", function(data, method = c("ipflasso", "priorityla
   # return(model)
 
 })
+
+# Define the custom class "MLSeqSurv" with slots "train" and "test"
+setClass("MLSeqSurv",
+         slots = list(
+           train = "data.frame",
+           test = "data.frame"
+         )
+)
+
+# Constructor for the MLSeqSurv class
+# Add new fields as needed.
+# This should be enough for now since we don't inherently need other fields such as event_column, time_column etc.
+MLSeqSurv <- function(train, test) {
+  obj <- new("MLSeqSurv")
+
+  # Set the values of the "train" and "test" slots
+  obj@train <- train
+  obj@test <- test
+
+  # Return the created object
+  return(obj)
+}

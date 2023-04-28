@@ -565,6 +565,9 @@ preprocess <- function(data, preProcessing = "deseq-vst", filterGene = FALSE, fi
     tvsd_test2$sirano <- as.integer(tvsd_test2$sirano)
     tvsd_test2[] <- apply(tvsd_test2, 2, function(x) as.double((x)))
 
+
+    data@train <- tvsd_train2
+    data@test <- tvsd_test2
     return(data)
   }
 
@@ -669,10 +672,13 @@ preprocess <- function(data, preProcessing = "deseq-vst", filterGene = FALSE, fi
 
 
     # Merge all the relevant data into a single S4 object
+    data@train <- tvsd_train2
+    data@test <- tvsd_test2
     return(data)
   }
 
   else {
     cat("Available preprocessing methods are: \"deseq-vst\" and \"deseq-voom\".")
+    stop()
   }
 }

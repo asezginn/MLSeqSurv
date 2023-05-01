@@ -1,6 +1,6 @@
 # These functions need to be documented and relabeled appropriately.
 # Will there be variance filtering? If there is going to be variance filtering, what is the cutoff
-#### Functions necessary for Preproecessing ####
+#### Functions necessary for Preprocessing ####
 
 arrayWeights <- function(object, design=NULL, weights=NULL, var.design=NULL, var.group=NULL, prior.n=10,
                          method="none", maxiter=50L, tol=1e-5, trace=FALSE)

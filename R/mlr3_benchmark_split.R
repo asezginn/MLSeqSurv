@@ -46,17 +46,17 @@ library(caret)
 # mydata$status <- as.numeric(as.character(mydata$status))
 # mydata <- mydata[,-34]
 
-dir.create(path = "Results_CompSurv/DLBC_ProteinCoding") # Create necessary folders
-dir.create(path = "Results_CompSurv/DLBC_ProteinCoding/cindex_time")
-dir.create(path = "Results_CompSurv/DLBC_ProteinCoding/preFeatSel")
-dir.create(path = "Results_CompSurv/DLBC_ProteinCoding/nearzero_testset")
-dir.create(path = "Results_CompSurv/DLBC_ProteinCoding/nearzero_trainset")
-dir.create(path = "Results_CompSurv/DLBC_ProteinCoding/selectedfeatures")
-dir.create(path = "Results_CompSurv/DLBC_ProteinCoding/testset")
-dir.create(path = "Results_CompSurv/DLBC_ProteinCoding/trainset")
+dir.create(path = "Results_CompSurv/ACC_ProteinCoding") # Create necessary folders
+dir.create(path = "Results_CompSurv/ACC_ProteinCoding/cindex_time")
+dir.create(path = "Results_CompSurv/ACC_ProteinCoding/preFeatSel")
+dir.create(path = "Results_CompSurv/ACC_ProteinCoding/nearzero_testset")
+dir.create(path = "Results_CompSurv/ACC_ProteinCoding/nearzero_trainset")
+dir.create(path = "Results_CompSurv/ACC_ProteinCoding/selectedfeatures")
+dir.create(path = "Results_CompSurv/ACC_ProteinCoding/testset")
+dir.create(path = "Results_CompSurv/ACC_ProteinCoding/trainset")
 
 
-t_harmonised <- read.csv("cancerData/DLBC_ProteinCoding.csv",header=TRUE,sep=",")
+t_harmonised <- read.csv("cancerData/ACC_ProteinCoding.csv",header=TRUE,sep=",")
 # remove 0's and NA's from time
 # remove NA's from status
 t_harmonised <- t_harmonised[!is.na(t_harmonised$time),] # removes NA rows from time
@@ -102,12 +102,12 @@ for (index in 1:30){
   ##### train data #####
   train_ind <- as.vector(split$train)
   train_data <- mydata[train_ind,]
-  fwrite(train_data, file = paste("Results_CompSurv/DLBC_ProteinCoding/trainset/trainset",index,".csv",sep = ""))# replace 1 with the index of the for loop
+  fwrite(train_data, file = paste("Results_CompSurv/ACC_ProteinCoding/trainset/trainset",index,".csv",sep = ""))# replace 1 with the index of the for loop
 
   ##### test data ######
   test_ind <- as.vector(split$test)
   test_data <- mydata[test_ind,]
-  fwrite(test_data, file = paste("Results_CompSurv/DLBC_ProteinCoding/testset/testset",index,".csv",sep = ""))# replace 1 with the index of the for loop
+  fwrite(test_data, file = paste("Results_CompSurv/ACC_ProteinCoding/testset/testset",index,".csv",sep = ""))# replace 1 with the index of the for loop
 
 
   #### control #####
@@ -137,14 +137,14 @@ for (index in 1:30){
   keep_tr <- rowSums(counts(dds_tr)) >= 10
   dds_tr <- dds_tr[keep_tr,]
   dds_tr
-  fwrite(as.data.frame(assay(dds_tr)), file = paste("Results_CompSurv/DLBC_ProteinCoding/nearzero_trainset/nearzero_trainset",index,".csv",sep = ""))# replace 1 with the index of the for loop
+  fwrite(as.data.frame(assay(dds_tr)), file = paste("Results_CompSurv/ACC_ProteinCoding/nearzero_trainset/nearzero_trainset",index,".csv",sep = ""))# replace 1 with the index of the for loop
 
 
   dds_ts <- DESeqDataSetFromMatrix(countData = test_matrix,
                                    colData = as.data.frame(colnames(test_matrix)),
                                    design = ~ 1)
   dds_ts <- dds_ts[keep_tr,]
-  fwrite(as.data.frame(assay(dds_ts)), file = paste("Results_CompSurv/DLBC_ProteinCoding/nearzero_testset/nearzero_testset",index,".csv",sep = ""))# replace 1 with the index of the for loop
+  fwrite(as.data.frame(assay(dds_ts)), file = paste("Results_CompSurv/ACC_ProteinCoding/nearzero_testset/nearzero_testset",index,".csv",sep = ""))# replace 1 with the index of the for loop
 
   #### train set ####
   normalization <- "deseq"
@@ -203,7 +203,7 @@ for (index in 1:30){
   # tvsd_train2$sirano <- as.integer(tvsd_train2$sirano)
   tvsd_train2[] <- apply(tvsd_train2, 2, function(x) as.double((x)))
 
-  fwrite(tvsd_train2, file = paste("Results_CompSurv/DLBC_ProteinCoding/preFeatSel/train_set", index, ".csv", sep = ""))
+  fwrite(tvsd_train2, file = paste("Results_CompSurv/ACC_ProteinCoding/preFeatSel/train_set", index, ".csv", sep = ""))
 
 
   names(tvsd_test2)[names(tvsd_test2) == "V2"] <- "time"
@@ -214,7 +214,7 @@ for (index in 1:30){
   tvsd_test2$sirano <- as.integer(tvsd_test2$sirano)
   tvsd_test2[] <- apply(tvsd_test2, 2, function(x) as.double((x)))
 
-  fwrite(tvsd_test2, file = paste("Results_CompSurv/DLBC_ProteinCoding/preFeatSel/test_set", index, ".csv", sep = "") )
+  fwrite(tvsd_test2, file = paste("Results_CompSurv/ACC_ProteinCoding/preFeatSel/test_set", index, ".csv", sep = "") )
 
 
 }

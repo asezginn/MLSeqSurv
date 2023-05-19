@@ -1,41 +1,37 @@
-#' MLSeqSurv
-#'
-#' This package contains functions for training and predicting using machine learning models.
-#'
-#' @name MLSeqSurv
+# Define the custom class "MLSeqSurv" with slots "train" and "test"
+setClass("MLSeqSurv",
+         slots = list(
+           train = "data.frame",
+           test = "data.frame"
+         )
+)
 
-#' @docType package
-#' @useDynLib MLSeqSurv, .registration = TRUE
+# Constructor for the MLSeqSurv class
+# Add new fields as needed.
+# This should be enough for now since we don't inherently need other fields such as event_column, time_column etc.
+MLSeqSurv <- function(train, test) {
+  obj <- new("MLSeqSurv")
 
-setClass("MLSeqSurv", representation(model = "any"))
+  # Set the values of the "train" and "test" slots
+  obj@train <- train
+  obj@test <- test
 
-#' @rdname MLSeqSurv-class
-#' @aliases MLSeqSurv-class
-setMethod("predict", "MLSeqSurv", function(object, newdata) {
-  # function content
-
-  return(predict(object@model, newdata))
-})
+  # Return the created object
+  return(obj)
+}
 
 get_available_methods <- function(){
 
-  all_methods_vector <- c("ipflasso", "prioritylasso")
+  all_methods_vector <- c("ipflasso", "prioritylasso", "blackboost")
   return(all_methods_vector)
 
 }
 
-#' @rdname MLSeqSurv-class
-#' @aliases MLSeqSurv-classW
-setMethod("surv", "MLSeqSurv", function(data, method = c("ipflasso", "prioritylasso"), preProcessing = c("deseq-vst", "deseq-voom"), paramGrid, ...) {
+surv <- function(data, method = c("ipflasso", "prioritylasso"), preProcessing = c("deseq-vst", "deseq-voom"), fsParams, atParams, paramGrid, ...) {
 
-  # should data be an S4 object?
   if (is.null(data)){
     stop("Data is null")
   }
-  if (!(is.data.frame(data))){
-    data <- as.data.frame(data)
-  }
-
   if (is.null(method)){
     stop("Method is not specified.")
   }
@@ -151,26 +147,4 @@ setMethod("surv", "MLSeqSurv", function(data, method = c("ipflasso", "priorityla
   #
   # return(model)
 
-})
-
-# Define the custom class "MLSeqSurv" with slots "train" and "test"
-setClass("MLSeqSurv",
-         slots = list(
-           train = "data.frame",
-           test = "data.frame"
-         )
-)
-
-# Constructor for the MLSeqSurv class
-# Add new fields as needed.
-# This should be enough for now since we don't inherently need other fields such as event_column, time_column etc.
-MLSeqSurv <- function(train, test) {
-  obj <- new("MLSeqSurv")
-
-  # Set the values of the "train" and "test" slots
-  obj@train <- train
-  obj@test <- test
-
-  # Return the created object
-  return(obj)
 }

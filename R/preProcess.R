@@ -571,7 +571,7 @@ preprocess <- function(data, preProcessing = "deseq-vst", filterGene = FALSE, fi
     return(data)
   }
 
-  else if (method == "deseq-vst"){
+  else if (preProcessing == "deseq-vst"){
 
     ### apply deseq-vst preprocessing steps here
 

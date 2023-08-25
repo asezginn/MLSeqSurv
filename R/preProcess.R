@@ -2,6 +2,7 @@
 # Will there be variance filtering? If there is going to be variance filtering, what is the cutoff
 #### Functions necessary for Preprocessing ####
 
+
 arrayWeights <- function(object, design=NULL, weights=NULL, var.design=NULL, var.group=NULL, prior.n=10,
                          method="none", maxiter=50L, tol=1e-5, trace=FALSE)
   #	Estimate array quality weights.
@@ -253,7 +254,7 @@ calcNormFactorsGSD <- function(data.train, data.test, lib.size = NULL, method = 
 
 
 voom_lasso <- function(data.train, data.test, design=NULL,lib.size=NULL,normalize.method="none",block=NULL,correlation=NULL,weights=NULL,
-                     span=0.5,plot=FALSE,save.plot=FALSE)
+                       span=0.5,plot=FALSE,save.plot=FALSE)
   #	Linear modelling of count data with mean-variance modelling at the observation level.
   #	Creates an EList object for entry to lmFit() etc in the limma pipeline.
   #	Gordon Smyth and Charity Law
@@ -320,11 +321,11 @@ voom_lasso <- function(data.train, data.test, design=NULL,lib.size=NULL,normaliz
   colnames(design.ts) <- "GrandMean"
 
   #	Fit linear model to log2-counts-per-million
-  y.tr <- t(log2(t(data.train + 0.5)/(lib.size.tr + 1) * 1e+06))
-  y.ts <- t(log2(t(data.test + 0.5)/(lib.size.ts + 1) * 1e+06))
+  y.tr <- t(log2(t(data.train + 1)/(lib.size.tr + 1) * 1e+06))
+  y.ts <- t(log2(t(data.test + 1)/(lib.size.ts + 1) * 1e+06))
 
-  y.tr <- y.tr[rownames(y.tr) %in% rownames(train_matrix), ]  # Extract rows from data
-  y.ts <- y.ts[rownames(y.ts) %in% rownames(train_matrix), ]  # Extract rows from data
+  y.tr <- y.tr[rownames(y.tr) %in% rownames(data.train), ]  # Extract rows from data
+  y.ts <- y.ts[rownames(y.ts) %in% rownames(data.train), ]  # Extract rows from data
 
   #y <- normalizeBetweenArrays(y,method="none")
 
@@ -333,10 +334,15 @@ voom_lasso <- function(data.train, data.test, design=NULL,lib.size=NULL,normaliz
   tr_y <- as.matrix(train_dge)
   ts_y <- as.matrix(test_dge)
 
-
+  # tr_cik <- t(tr_y)[, !apply(t(tr_y), 2, function(x) any(x < 0))]
+  # neg_rem <- colnames(tr_cik)
+  # ts_cik <- t(ts_y)[,neg_rem]
+  #
+  # tr_y <- t(tr_cik)
+  # ts_y <- t(ts_cik)
   #### Variance Filtering ####
   ss = apply(tr_y,1,sd)
-  ort = apply(ts_y,1,mean)
+  ort = apply(tr_y,1,mean)
   cv = ss/ort
   siralama = order(cv, decreasing = TRUE)
 
@@ -437,6 +443,7 @@ voom_lasso <- function(data.train, data.test, design=NULL,lib.size=NULL,normaliz
   out$TestDesign <- design.ts
   out$Traintargets <- data.frame(lib.size.tr=lib.size.tr)
   out$Testtargets <- data.frame(lib.size.ts=lib.size.ts)
+  out$siralama <- siralama
   new("EList", out)
 
   # #	Output
@@ -456,8 +463,8 @@ voom_lasso <- function(data.train, data.test, design=NULL,lib.size=NULL,normaliz
 }
 
 voomWithQualityWeights_lasso <- function(data.train, data.test, design=NULL, lib.size=NULL, normalize.method="none", plot=FALSE, span=0.5,
-                                       var.design=NULL, var.group=NULL, method="genebygene", maxiter=50, tol=1e-5, trace=FALSE,
-                                       col=NULL, ...)
+                                         var.design=NULL, var.group=NULL, method="genebygene", maxiter=50, tol=1e-5, trace=FALSE,
+                                         col=NULL, ...)
   #	Combine voom weights with sample-specific weights estimated by arrayWeights() function for RNA-seq data
   #	Matt Ritchie, Cynthia Liu, Gordon Smyth
   #	Created 22 Sept 2014. Last modified 7 June 2019.
@@ -483,16 +490,14 @@ voomWithQualityWeights_lasso <- function(data.train, data.test, design=NULL, lib
   #	Incorporate the array weights into the voom weights
   v$weights <- t(aw * t(v$weights))
   v$targets$sample.weights <- aw
-
   #	Plot array weights
-  if(plot) {
-    barplot(aw, names=1:length(aw), main="Sample-specific weights", ylab="Weight", xlab="Sample", col=col)
-    abline(h=1, col=2, lty=2)
-  }
+  # if(plot) {
+  #   barplot(aw, names=1:length(aw), main="Sample-specific weights", ylab="Weight", xlab="Sample", col=col)
+  #   abline(h=1, col=2, lty=2)
+  # }
 
   v
 }
-
 
 
 #### Preprocessing function ####
@@ -510,8 +515,37 @@ preprocess <- function(data, preProcessing = "deseq-vst", filterGene = FALSE, fi
 
     ### apply deseq-voom preprocessing steps here
 
+    # browser()
+
     train_data <- data@train
     test_data <- data@test
+
+    tr_status <- train_data$status
+    ts_status <- test_data$status
+
+    df4 <- train_data[, colSums(train_data) == 0]
+    columns_to_remove <- colnames(df4)
+    train_data <- subset(train_data, select = !(colnames(train_data) %in% columns_to_remove))
+    test_data <- subset(test_data, select = !(colnames(test_data) %in% columns_to_remove))
+
+    train_time <- train_data$time
+    test_time <- test_data$time
+
+    train_data <- train_data[,-ncol(train_data)]
+    test_data <- test_data[,-ncol(test_data)]
+
+    train_data <- cbind(train_data, tr_status, train_time)
+    test_data <- cbind(test_data, ts_status, test_time)
+
+    colnames(train_data)[colnames(train_data) == "tr_status"] <- "status"
+    colnames(train_data)[colnames(train_data) == "train_time"] <- "time"
+    colnames(test_data)[colnames(test_data) == "ts_status"] <- "status"
+    colnames(test_data)[colnames(test_data) == "test_time"] <- "time"
+
+
+    train_ind <- as.vector(seq(1, nrow(train_data)))
+    test_ind <- as.vector(seq(max(train_ind)+1, max(train_ind)+nrow(test_data)))
+
 
     ### Extract columns of time and status from train dataset ###
     cols_t <- as.vector(colnames(train_data))
@@ -537,37 +571,48 @@ preprocess <- function(data, preProcessing = "deseq-vst", filterGene = FALSE, fi
     span = 0.5
 
     transformation <- voomWithQualityWeights_lasso(train_matrix, test_matrix, design=NULL, lib.size=NULL, normalize.method="deseq", plot=FALSE,
-                                          span=0.5, var.design=NULL, var.group=NULL, maxiter=50, tol=1e-5,
-                                          trace=FALSE, col=NULL, method = "genebygene")
+                                            span=0.5, var.design=NULL, var.group=NULL, maxiter=50, tol=1e-5,
+                                            trace=FALSE, col=NULL, method = "genebygene")
+
+    train_E <- transformation$E
+    train_W <- transformation$targets$sample.weights
+
+    test_E <- transformation$TestExp
+
+
+    input_tr <- t(train_E)
+    input_ts <- t(test_E)
+
     sirala <- transformation$siralama
     cv_train <- t(input_tr)[sirala[1:2000],]
     cv_test <- t(input_ts)[sirala[1:2000],]
 
     #### Creating final version of train and test datasets ####
     # This part needs to be cleaned up
-    tvsd_train2 <- as.data.frame(cbind(train_ind, train_data$time, train_data$status, t(cv_train), train_W))
-    tvsd_test2 <- as.data.frame(cbind(test_ind, test_data$time, test_data$status, t(cv_test)))
-    names(tvsd_train2)[names(tvsd_train2) == "V2"] <- "time"
-    names(tvsd_train2)[names(tvsd_train2) == "V3"] <- "status"
-    names(tvsd_train2)[names(tvsd_train2) == "train_ind"] <- "sirano"
+    tvsd_train2 <- as.data.frame(cbind(train_data$time, train_data$status, t(cv_train), train_W))
+    tvsd_test2 <- as.data.frame(cbind(test_data$time, test_data$status, t(cv_test)))
+    names(tvsd_train2)[names(tvsd_train2) == "V1"] <- "time"
+    names(tvsd_train2)[names(tvsd_train2) == "V2"] <- "status"
+    # names(tvsd_train2)[names(tvsd_train2) == "train_ind"] <- "sirano"
     names(tvsd_train2)[names(tvsd_train2) == "train_W2"] <- "weight"
     tvsd_train2$time <- as.integer(tvsd_train2$time)
     tvsd_train2$status <- as.integer(tvsd_train2$status)
-    tvsd_train2$sirano <- as.integer(tvsd_train2$sirano)
+    # tvsd_train2$sirano <- as.integer(tvsd_train2$sirano)
     tvsd_train2[] <- apply(tvsd_train2, 2, function(x) as.double((x)))
 
 
-    names(tvsd_test2)[names(tvsd_test2) == "V2"] <- "time"
-    names(tvsd_test2)[names(tvsd_test2) == "V3"] <- "status"
-    names(tvsd_test2)[names(tvsd_test2) == "test_ind"] <- "sirano"
+    names(tvsd_test2)[names(tvsd_test2) == "V1"] <- "time"
+    names(tvsd_test2)[names(tvsd_test2) == "V2"] <- "status"
+    # names(tvsd_test2)[names(tvsd_test2) == "test_ind"] <- "sirano"
     tvsd_test2$time <- as.integer(tvsd_test2$time)
     tvsd_test2$status <- as.integer(tvsd_test2$status)
-    tvsd_test2$sirano <- as.integer(tvsd_test2$sirano)
+    # tvsd_test2$sirano <- as.integer(tvsd_test2$sirano)
     tvsd_test2[] <- apply(tvsd_test2, 2, function(x) as.double((x)))
 
 
-    data@train <- tvsd_train2
-    data@test <- tvsd_test2
+    data@preprocessed_train <- tvsd_train2
+    data@preprocessed_test <- tvsd_test2
+    print("Preprocessing is done")
     return(data)
   }
 
@@ -646,34 +691,36 @@ preprocess <- function(data, preProcessing = "deseq-vst", filterGene = FALSE, fi
     ort = apply(t(input_tr),1,mean)
     cv = ss/ort
     siralama = order(cv, decreasing = TRUE)
-    cv_train <- t(input_tr)[siralama[1:1900],]
-    cv_test <- t(input_ts)[siralama[1:1900],]
-
-    tvsd_train2 <- as.data.frame(cbind(train_ind, satir[as.vector(train_ind),][,3:4], t(cv_train)))
-    tvsd_test2 <- as.data.frame(cbind(test_ind, satir[as.vector(test_ind),][,3:4], t(cv_test)))
-    #comp <- as.data.frame(rbind(tvsd_train2,tvsd_test2))
-    names(tvsd_train2)[names(tvsd_train2) == "V2"] <- "time"
-    names(tvsd_train2)[names(tvsd_train2) == "V3"] <- "status"
-    names(tvsd_train2)[names(tvsd_train2) == "train_ind"] <- "sirano"
+    cv_train <- t(input_tr)[siralama[1:2000],]
+    cv_test <- t(input_ts)[siralama[1:2000],]
+    # tvsd_train2 <- as.data.frame(cbind(train_ind, satir[as.vector(train_ind),][,3:4], t(cv_train)))
+    # tvsd_test2 <- as.data.frame(cbind(test_ind, satir[as.vector(test_ind),][,3:4], t(cv_test)))
+    ##
+    tvsd_train2 <- as.data.frame(cbind(data@train$time, data@train$status, t(cv_train)))
+    tvsd_test2 <- as.data.frame(cbind(data@test$time, data@test$status, t(cv_test)))
+    names(tvsd_train2)[names(tvsd_train2) == "V1"] <- "time"
+    names(tvsd_train2)[names(tvsd_train2) == "V2"] <- "status"
+    # names(tvsd_train2)[names(tvsd_train2) == "train_ind"] <- "sirano"
     tvsd_train2$time <- as.integer(tvsd_train2$time)
     tvsd_train2$status <- as.integer(tvsd_train2$status)
-    tvsd_train2$sirano <- as.integer(tvsd_train2$sirano)
+    # tvsd_train2$sirano <- as.integer(tvsd_train2$sirano)
     # tvsd_train2$sirano <- as.integer(tvsd_train2$sirano)
     tvsd_train2[] <- apply(tvsd_train2, 2, function(x) as.double((x)))
 
 
-    names(tvsd_test2)[names(tvsd_test2) == "V2"] <- "time"
-    names(tvsd_test2)[names(tvsd_test2) == "V3"] <- "status"
-    names(tvsd_test2)[names(tvsd_test2) == "test_ind"] <- "sirano"
+    names(tvsd_test2)[names(tvsd_test2) == "V1"] <- "time"
+    names(tvsd_test2)[names(tvsd_test2) == "V2"] <- "status"
+    # names(tvsd_test2)[names(tvsd_test2) == "test_ind"] <- "sirano"
     tvsd_test2$time <- as.integer(tvsd_test2$time)
     tvsd_test2$status <- as.integer(tvsd_test2$status)
-    tvsd_test2$sirano <- as.integer(tvsd_test2$sirano)
+    # tvsd_test2$sirano <- as.integer(tvsd_test2$sirano)
     tvsd_test2[] <- apply(tvsd_test2, 2, function(x) as.double((x)))
 
 
     # Merge all the relevant data into a single S4 object
-    data@train <- tvsd_train2
-    data@test <- tvsd_test2
+    data@preprocessed_train <- tvsd_train2
+    data@preprocessed_test <- tvsd_test2
+    cat("Preprocessing is done.\n")
     return(data)
   }
 

@@ -582,12 +582,27 @@ stack_df <- function(data_df){
 
 
   data_df <- data_df[order(data_df[,c("time")],decreasing=FALSE),] # sorting the dataframe by time
+  event_count <- get_event_count(data_df)
   data_cov_df <- subset(data_df, select = -c(time, status))
   left_matrix <- create_left_matrix(data_df = data_df, data_cov_df = data_cov_df)
   column_count <- calculate_columns(data_df)
   # colnames(left_matrix[,(column_count-ncol(data_cov_df)+1):column_count]) <- colnames(data_cov_df)
   prediction_column <- create_prediction_column(data_df)
   final_df <- cbind.data.frame(left_matrix, prediction_column)
+  nrow_to_dupe <- nrow(final_df[final_df$time_column == final_df$time[1],])
+
+  risk_matrix_dupe <- matrix(0, nrow = nrow_to_dupe, ncol = event_count)
+  cov_matrix_dupe <- final_df[1:nrow_to_dupe ,(event_count+1):(ncol(data_cov_df)+event_count)]
+  pred_row_dupe <- numeric(length = nrow_to_dupe)
+  time_col_dupe <- numeric(length = nrow_to_dupe)
+  final_dupe <- cbind(risk_matrix_dupe, cov_matrix_dupe, time_col_dupe, pred_row_dupe)
+
+  time_0_col <- numeric(length = nrow(final_df) + nrow_to_dupe)
+  time_0_col[1:nrow_to_dupe] <- 1
+
+  colnames(final_dupe) <- colnames(final_df)
+  final_df <- rbind(final_dupe, final_df)
+  final_df <- cbind(time_0_col, final_df)
 
   return(final_df)
 
@@ -604,18 +619,19 @@ stacked_matrix_summarize <- function(stacked_df){
   return(summarised_df)
 }
 
+
+
+
 #### The functions of the test datasets manipulation ####
 
 adjust_test_row <- function(summarized_df, test_df_row, test_df_time, eventCount){ # added commas to row indexes because R thinks they are dataframes for some reason
-
 
 
   if (!is.null(summarized_df$prediction_column)){
     summarized_df <- subset(summarized_df, select = -c(prediction_column))
   }
 
-  time_index <- sum(summarized_df$time_column <= test_df_time) # this could return 0. Need to create a special case for it, also if it is larger than the max value need to add a new row
-
+  time_index <- findInterval(test_df_time, summarized_df$time_column) # this could return 0. Need to create a special case for it, also if it is larger than the max value need to add a new row
 
   if (time_index == 0){ # smaller than min, add time set? if we add new time set do we also need to add new risk set?
     # tempRow <- c(numeric(eventCount), test_df_row)
@@ -683,52 +699,148 @@ adjust_stacked_df <- function(stacked_data){
 }
 
 
-
-
 #### All of the generics defined for surv function. ####
 
-surv.ipflasso <- function(data = data, method = "ipflasso", preProcessing = preProcessing,  ...){
+# priolasso
+# imbalanced parameter SMOTE/ROS/RUS
+# block1 penalization TRUE/FALSE
+# lambda.type lambda.min/lambda.1se
+# standardize TRUE/FALSE
+# nfolds numeric
+# cvoffset TRUE/FALSE
+# cvoffsetnfolds numeric (depends on cvoffset)
+# surv_preds_pl_bin
 
-  data <- preprocess(data, preProcessing)
+# ipflasso
+#imbalanced
+#standardize
+#pf c(1,1)
+# nfolds
+# ncv
+# alpha
+# surv_preds_IPF_bin
 
-  stack_matris <- stack_df(data@train) # Normally we extract the first column.
+survival.ipflasso <- function(data = data, method = "ipflasso", balancer = "SMOTE", trainParams, ...){
 
-  summ_stack <- stacked_matrix_summarize(stack_matris)
-  event_count <- get_event_count(data@train)
 
-  stack_matris$prediction_column <- as.factor(stack_matris$prediction_column)
+  data <- preprocess(data, "deseq-voom")
 
-  ### Imbalancing problem ###
-  over1 <- ROS(stack_matris, "prediction_column")
-  agirlik <- over1[,(ncol(over1)-2)] # I am not sure about the idea behind -2 here
-  over <- over1[,-(ncol(over1)-2)]
+  time <- data@preprocessed_train$time
+  event <- data@preprocessed_train$status
+  X <- data@preprocessed_train[,3:(ncol(data@preprocessed_train)-1)]
+  newX <- data@preprocessed_test[,3:(ncol(data@preprocessed_test))]
+  agirlik <- data@preprocessed_train$train_W
+  newtimes<- sort(data@preprocessed_train$time[data@preprocessed_train$status == 1])
 
-  ##### Manipulation of test data ####
-  summ_stack <- summ_stack[,-(ncol(summ_stack)-1)]
-  over_final <- adjust_stacked_df(summ_stack)
-  test_final <- adjust_test_data(data@test)
-  transformed_test <- integrate_test_data(summarized_df = over_final, test_df = test_final, eventCount = event_count)
+  entry = NULL
 
-  probVector <- get_matching_probabilities(summ_stack, test_final)
-  probVector <- probVector %>% replace(is.na(.), 0)
-  probVector <- unlist(probVector)
+  X <- as.matrix(X)
+  time <- as.matrix(time)
+  event <- as.matrix(event)
+  dat <- data.frame(X, time, event)
 
-  y3 <-as.numeric(over$prediction_column) # Not sure if this is necessary. Should be renamed even if it is.
-  y3[y3==1] <- 0
-  y3[y3==2] <- 1
+  time_grid <- sort(unique(dat$time[dat$event == 1]))
+  time_grid <- c(0, time_grid)
 
-  over_matrix <- as.matrix(over[,1:(ncol(over)-2)]) # results in a character array
-  over_matrix <- apply(over_matrix, 2, as.numeric) # converts it into a numeric array
-  # Parameters that could be defined by user:
-  # nfolds, ncv, type.measure?, pf?, alpha, family?, standardize
-  # It might be better to use ellipsis (...) for these parameters.
-  model<-cvr.ipflasso_n(X=over_matrix,Y=y3, weights = agirlik, family="binomial",standardize=FALSE,
-                         blocks = list(block1=1:event_count, block2=(event_count+1):ncol(over_matrix)),
-                         pf=c(1,2),nfolds=5,ncv=10,type.measure="auc", alpha=0)
-  newdata_bin <- as.matrix(transformed_test)
-  ypredscore <- ipflasso.predict(object=model,Xtest=newdata_bin)
-  ypredscore$probabilitiestest <- ypredscore$probabilitiestest + probVector
-  auc_ipf <- my.auc(ypredscore$linpredtest, data@test$status)
+  trunc_time_grid <- time_grid
+
+  # time_grid <- sort(unique(dat$time[dat$event == 1]))
+  # time_grid <- c(0, time_grid)
+  #
+  # trunc_time_grid <- time_grid
+
+  ##### Add sample weights to X matrix ######
+
+  stackX <- as.matrix(data.frame(time = time, status = event, X, obsWeights = agirlik))
+
+
+  ##### Create stack matrix #####
+  stacked <- stack_df(stackX)
+  ###### Imbalancing problem ######
+
+  stacked$time_column <- NULL
+
+  stacked$prediction_column <- as.factor(stacked$prediction_column)
+  colnames(stacked)[(ncol(stacked)-1)] <- "obsWeights"
+  # imbalanced <- SMOTE(stacked, "prediction_column")
+
+
+
+  if (balancer == "SMOTE"){
+    imbalanced <- SMOTE(stacked, "prediction_column")
+    print("SMOTE is done!")
+  }
+  else if (balancer == "ROS"){
+    imbalanced <- ROS(stacked, "prediction_column")
+    print("ROS is done!")
+  }
+
+  else if (balancer == "RUS"){
+    imbalanced <- RUS(stacked, "prediction_column")
+    print("RUS is done!")
+  }
+
+  long_obsWeights <-imbalanced$obsWeights  #stacked$obsWeights
+  imbalanced$obsWeights <- NULL
+  .Y <- imbalanced[, ncol(imbalanced)] #stacked[, ncol(stacked)]
+  .X <- data.frame(imbalanced[, -ncol(imbalanced)]) #data.frame(stacked[, -ncol(stacked)])
+
+
+  print("Starting IPF Lasso")
+  IPF_bin_timer_start_tune <- Sys.time()
+  #
+  IPF_bin <- cvr.ipflasso_n(X=as.matrix(.X),Y=.Y, weights = long_obsWeights,
+                            family="binomial",standardize=trainParams[[1]],
+                            blocks = list(block1=1:(length(trunc_time_grid)), block2=(length(trunc_time_grid)+1):ncol(.X)),
+                            pf=trainParams[[2]],nfolds=trainParams[[3]],ncv=trainParams[[4]],
+                            type.measure="auc", alpha= trainParams[[5]])
+
+  print("IPF Lasso done!")
+
+
+  get_hazard_preds_IPF_bin <- function(index){
+    dummies <- matrix(0, ncol = length(trunc_time_grid), nrow = nrow(X))
+    dummies[,index] <- 1
+    new_stacked <- cbind(dummies, X)
+    risk_set_names <- paste0("risk_set_", seq(1, (length(trunc_time_grid))))
+    colnames(new_stacked)[1:length(trunc_time_grid)] <- risk_set_names
+    new_stacked <- as.matrix(new_stacked)
+    preds <- ipflasso.predict(object=IPF_bin,Xtest=new_stacked)$probabilitiestest
+    return(preds)
+  }
+
+  hazard_preds_IPF_bin <- apply(X = matrix(1:length(trunc_time_grid)),
+                                FUN = get_hazard_preds_IPF_bin, MARGIN = 1)
+  get_surv_preds_IPF_bin <- function(t) {
+    if (sum(trunc_time_grid <= t) != 0) {
+      final_index <- max(which(trunc_time_grid <= t))
+      haz <- as.matrix(hazard_preds_IPF_bin[, 1:final_index])
+      anti_haz <- 1 - haz
+      surv <- apply(anti_haz, MARGIN = 1, prod)
+    }
+    else {
+      surv <- rep(1, nrow(hazard_preds_IPF_bin))
+    }
+    return(surv)
+  }
+  surv_preds_IPF_bin <- apply(X = matrix(newtimes), FUN = get_surv_preds_IPF_bin,
+                              MARGIN = 1)
+
+  interval_75 <- findInterval(quantile(trunc_time_grid)[4], trunc_time_grid)
+
+  surv_preds_IPF_bin_spectime <- surv_preds_IPF_bin[,interval_75]
+  result_IPF_bin <- rcorr.cens(surv_preds_IPF_bin_spectime, Surv(data@preprocessed_train$time, data@preprocessed_train$status))
+  result_IPF_bin[1]
+
+  print(result_IPF_bin[1])
+
+  data@model <- IPF_bin
+  data@cindex_train <- result_IPF_bin[[1]]
+  data@times <- newtimes
+
+  return(data)
+
+
 
   # Create the appropriate S4 object
 
@@ -737,1440 +849,1830 @@ surv.ipflasso <- function(data = data, method = "ipflasso", preProcessing = preP
 
 }
 
-surv.prioritylasso <- function(data = data, method = "prioritylasso", preProcessing = preProcessing, fsParams, atParams, paramGrid, ...){
+survival.prioritylasso <- function(data = data, method = "prioritylasso", balancer = "SMOTE", trainParams, ...){
 
-  data <- preprocess(data, preProcessing)
 
-  stack_matris <- stack_df(data@train) # Normally we extract the first column.
+  data <- preprocess(data, "deseq-voom")
+  #
 
-  summ_stack <- stacked_matrix_summarize(stack_matris)
-  event_count <- get_event_count(data@train)
+  time <- data@preprocessed_train$time
+  event <- data@preprocessed_train$status
+  X <- data@preprocessed_train[,3:(ncol(data@preprocessed_train)-1)]
+  newX <- data@preprocessed_test[,3:(ncol(data@preprocessed_test))]
+  agirlik <- data@preprocessed_train$train_W
+  newtimes<- sort(data@preprocessed_train$time[data@preprocessed_train$status == 1])
 
-  stack_matris$prediction_column <- as.factor(stack_matris$prediction_column)
+  entry = NULL
 
-  ### Imbalancing problem ###
-  over1 <- ROS(stack_matris, "prediction_column")
-  agirlik <- over1[,(ncol(over1)-2)] # I am not sure about the idea behind -2 here
-  over <- over1[,-(ncol(over1)-2)]
+  X <- as.matrix(X)
+  time <- as.matrix(time)
+  event <- as.matrix(event)
+  dat <- data.frame(X, time, event)
 
-  ##### Manipulation of test data ####
-  print("Adjusting test data!")
-  summ_stack <- summ_stack[,-(ncol(summ_stack)-1)]
-  over_final <- adjust_stacked_df(summ_stack)
-  test_final <- adjust_test_data(data@test)
-  transformed_test <- integrate_test_data(summarized_df = over_final, test_df = test_final, eventCount = event_count)
+  time_grid <- sort(unique(dat$time[dat$event == 1]))
+  time_grid <- c(0, time_grid)
 
-  probVector <- get_matching_probabilities(summ_stack, test_final)
-  probVector <- probVector %>% replace(is.na(.), 0)
-  probVector <- unlist(probVector)
+  trunc_time_grid <- time_grid
 
-  y3 <-as.numeric(over$prediction_column) # Not sure if this is necessary. Should be renamed even if it is.
-  y3[y3==1] <- 0
-  y3[y3==2] <- 1
+  ##### Add sample weights to X matrix ######
 
-  over_matrix <- as.matrix(over[,1:(ncol(over)-2)]) # results in a character array
-  over_matrix <- apply(over_matrix, 2, as.numeric) # converts it into a numeric array
+  stackX <- as.matrix(data.frame(time = time, status = event, X, obsWeights = agirlik))
 
-  # Parameters that could be defined by user:
-  # family?, type.measure?, block1.penalization?, lamda.type, standardize, nfolds, cvoffset, cvoffsetnfolds
-  # It might be better to use ellipsis (...) for these parameters.
-  pl_bin <- prioritylasso(X = over_matrix, Y = y3,weights = agirlik,
-                           family = "binomial", type.measure = "auc",
-                           blocks = list(block1=1:event_count, block2=(event_count+1):ncol(over_matrix)),
-                           block1.penalization = TRUE, lambda.type = "lambda.min",
-                           standardize = TRUE, nfolds = 5, cvoffset = TRUE, cvoffsetnfolds = 10)
-  newdata_bin <- as.matrix(transformed_test)
-  ypredscore <-predict(object = pl_bin, newdata = newdata_bin, type = "response")
-  pred <- prediction(ypredscore, data@test$status)
-  pred@predictions <- list(unlist(pred@predictions) + probVector) # Double check if this is correct
-  # perf <- performance(pred, measure = "tpr", x.measure = "fpr") # Plot probably isn't necessary
-  # plot(perf,col='red')
-  # abline(a=0,b=1)
-  auc <- performance(pred,measure="auc")@y.values
+  ##### Create stack matrix #####
+  stacked <- stack_df(stackX)
 
-  # Create the appropriate S4 object
+  ###### Imbalancing problem ######
+  stacked$time_column <- NULL
+  colnames(stacked)[(ncol(stacked)-1)] <- "obsWeights"
+  stacked$prediction_column <- as.factor(stacked$prediction_column)
+
+  if (balancer == "SMOTE"){
+    imbalanced <- SMOTE(stacked, "prediction_column")
+    print("SMOTE is done!")
+  }
+  else if (balancer == "ROS"){
+    imbalanced <- ROS(stacked, "prediction_column")
+    print("ROS is done!")
+  }
+
+  else if (balancer == "RUS"){
+    imbalanced <- RUS(stacked, "prediction_column")
+    print("RUS is done!")
+  }
+
+
+  long_obsWeights <-imbalanced$obsWeights  #stacked$obsWeights
+  imbalanced$obsWeights <- NULL
+  .Y <- imbalanced[, ncol(imbalanced)] #stacked[, ncol(stacked)]
+  .X <- data.frame(imbalanced[, -ncol(imbalanced)]) #data.frame(stacked[, -ncol(stacked)])
+
+  #
+  print("Starting Priority Lasso")
+  pl_bin_timer_start_tune <- Sys.time()
+  pl_bin <- prioritylasso(X = as.matrix(.X), Y = .Y, weights = long_obsWeights,
+                          family = "binomial", type.measure = "auc",
+                          #blocks = list(block1=1:20, block2=21:ncol(.X)),
+                          blocks = list(block1=1:(length(dat$time[dat$event == 1])), block2=(length(dat$time[dat$event == 1])+1):ncol(.X)),
+                          block1.penalization = trainParams[[1]],
+                          lambda.type = trainParams[[2]],
+                          standardize = trainParams[[3]], nfolds = trainParams[[4]], cvoffset = trainParams[[5]], cvoffsetnfolds = trainParams[[6]])
+
+  print("Priority Lasso is done.")
+  #
+  get_hazard_preds_pl_bin <- function(index){
+    dummies <- matrix(0, ncol = length(trunc_time_grid), nrow = nrow(X))
+    dummies[,index] <- 1
+    new_stacked <- cbind(dummies, X)
+    risk_set_names <- paste0("risk_set_", seq(1, (length(trunc_time_grid))))
+    colnames(new_stacked)[1:length(trunc_time_grid)] <- risk_set_names
+    new_stacked <- as.matrix(new_stacked)
+    preds <- stats::predict(object = pl_bin, newdata = new_stacked, type = "response")
+    return(preds)
+  }
+
+  hazard_preds_pl_bin <- apply(X = matrix(1:length(trunc_time_grid)),
+                               FUN = get_hazard_preds_pl_bin, MARGIN = 1)
+  get_surv_preds_pl_bin <- function(t) {
+    if (sum(trunc_time_grid <= t) != 0) {
+      final_index <- max(which(trunc_time_grid <= t))
+      haz <- as.matrix(hazard_preds_pl_bin[, 1:final_index])
+      anti_haz <- 1 - haz
+      surv <- apply(anti_haz, MARGIN = 1, prod)
+    }
+    else {
+      surv <- rep(1, nrow(hazard_preds_pl_bin))
+    }
+    return(surv)
+  }
+
+  surv_preds_pl_bin <- apply(X = matrix(newtimes), FUN = get_surv_preds_pl_bin,
+                             MARGIN = 1)
+
+  interval_75 <- findInterval(quantile(trunc_time_grid)[4], trunc_time_grid)
+
+  surv_preds_pl_bin_spectime <- surv_preds_pl_bin[,interval_75]
+  result_pl_bin<-rcorr.cens(surv_preds_pl_bin_spectime, Surv(data@preprocessed_train$time, data@preprocessed_train$status))
+  result_pl_bin[1]
+
+  data@model <- pl_bin
+  data@cindex_train <- result_pl_bin[[1]]
+  data@times <- newtimes
+  print(result_pl_bin[1])
+  return(data)
+
+
+  # return(surv_preds_pl_bin)
 
 }
 
-surv.blackboost <- function(data = data, method = "blackboost", preProcessing = preProcessing, fsParams, atParams, paramGrid, ...){
+
+survival.blackboost <- function(data = data, method = "blackboost", fsParams, trainParams, tuneGrid, ...){
 
   # this function might return an S4 object as data
   # S4 object could contain: train data set, test data set, time column, event column, original data
-  data <- preprocess(data, preProcessing)
+  data <- preprocess(data, "deseq-vst")
 
-  learner <- lrn("surv.blackboost", id = method, mstop = 100, ...) # will take parameters dynamically
+  learner <- lrn("surv.blackboost", id = method, ...) # will take parameters dynamically
 
-  task_fs = TaskSurv$new("task_fs", data@train, time = "time", event = "status")
-
-  # measures = msrs(c("surv.cindex"))
+  task_fs = TaskSurv$new("task_fs", data@preprocessed_train, time = "time", event = "status")
+  measures = msrs(c("surv.cindex")) # this probably should change with a parameter.
+  # measures = msrs(c("survival.cindex"))
 
 
   # fsParams is a list of lists that contain appropriate parameters for feature selection. These should be available in man page for the function.
   # First element of this list is notable since it can/will contain multiple elements.
   # May need to look into unlisting them from a list format.
   # We can't simply dedicate more elements of the list because the list will contain varying amount of elements depending on the method chosen.
+
   instance = FSelectInstanceSingleCrit$new(
     task = task_fs,
     learner = learner,
     resampling = do.call(mlr3::rsmp, fsParams[[1]]),
     measure = do.call(mlr3::msr, fsParams[[2]]),
-    terminator = do.call(mlr3::trm, fsParams[[3]])
+    terminator = do.call(mlr3verse::trm, fsParams[[3]])
   )
 
-  fselector = do.call(mlr3::fs, fsParams[[4]])
+  fselector = do.call(mlr3verse::fs, fsParams[[4]])
   fselector$optimize(instance)
 
+
   features <- as.vector(instance$result_feature_set)
-
-  data@train <- cbind(data@train[,1], subset(data@train, select=features), data@train$time, data@train$status) # this needs to be cleaned up and be more dynamic
-  data@test <- cbind(data@test[,1], subset(data@test, select=features), data@test$time, data@test$status)
+  data@preprocessed_train <- cbind(subset(data@preprocessed_train, select=features), data@preprocessed_train$time, data@preprocessed_train$status) # this needs to be cleaned up and be more dynamic
+  data@preprocessed_test <- cbind(subset(data@preprocessed_test, select=features), data@preprocessed_test$time, data@preprocessed_test$status)
   # names of the column need to be fixed
-  names(data@train)[names(data@train) == "data@train$time"] <- "time"
-  names(data@train)[names(data@train) == "data@train$status"] <- "status"
-  names(data@test)[names(data@test) == "data@test$time"] <- "time"
-  names(data@test)[names(data@test) == "data@test$status"] <- "status"
+  names(data@preprocessed_train)[names(data@preprocessed_train) == "data@preprocessed_train$time"] <- "time"
+  names(data@preprocessed_train)[names(data@preprocessed_train) == "data@preprocessed_train$status"] <- "status"
+  names(data@preprocessed_test)[names(data@preprocessed_test) == "data@preprocessed_test$time"] <- "time"
+  names(data@preprocessed_test)[names(data@preprocessed_test) == "data@preprocessed_test$status"] <- "status"
 
 
-  task_tune <- TaskSurv$new("task_tune", data@train, time = "time", event = "status")
+  task_tune <- TaskSurv$new("task_tune", data@preprocessed_train, time = "time", event = "status")
 
-  tune_ps = ParamSet$new(paramGrid) # It might be better to add the paramGrid directly into the atParams.
-  # This is a very tricky parameter to accept from user
-  # It requires user to have knowledge of mlr3 paramgrids and it also causes a very messy function call
-  # Might be better to simply ignore this for now and give default values.
+
+  tune_space <- ParamSet$new(tuneGrid)
 
   at=AutoTuner$new(learner=learner,
-                   resampling=do.call(mlr3::rsmp, atParams[[1]]),
-                   measure = do.call(mlr3::msr, atParams[[2]]),
-                   terminator = do.call(mlr3::trm, atParams[[3]]),
-                   tuner=do.call(mlr3::tnr, atParams[[4]]),
-                   search_space = tune_ps
+                   resampling=do.call(mlr3::rsmp, trainParams[[1]]),
+                   measure = do.call(mlr3::msr, trainParams[[2]]),
+                   terminator = do.call(mlr3verse::trm, trainParams[[3]]),
+                   tuner=do.call(mlr3verse::tnr, trainParams[[4]]),
+                   search_space = tune_space
   )
-
   at$train(task_tune)
-  pred_result <- at$predict_newdata(newdata = data@test)$score(measures)
 
-  # Create the desired S4 object by merging the results.
+  data@model <- at
+  pred_result <- at$predict_newdata(newdata = data@preprocessed_train)$score(measures)
+  data@cindex_train <- pred_result
+  return(data)
 
 
 
 }
 
-surv.cforest <- function(data = data, method = "cforest", preProcessing = preProcessing, paramGrid, ...){
+survival.cforest <- function(data = data, method = "cforest", fsParams, trainParams, tuneGrid, ...){
 
   # this function might return an S4 object as data
   # S4 object could contain: train data set, test data set, time column, event column, original data
-  data <- preprocess(data, preProcessing)
+  data <- preprocess(data, "deseq-vst")
 
-  learner <- lrn("surv.cforest", id = method, mstop = 100, ...) # will take parameters dynamically
+  # double check if this actually works.
+  learner <- lrn("surv.cforest", id = method, ...) # will take parameters dynamically
 
-  task_fs = TaskSurv$new("task_fs", data@train, time = "time", event = "status")
+  task_fs = TaskSurv$new("task_fs", data@preprocessed_train, time = "time", event = "status")
+  measures = msrs(c("surv.cindex")) # this probably should change with a parameter.
+  # measures = msrs(c("survival.cindex"))
 
-  measures = msrs(c("surv.cindex"))
 
-  instance = FSelectInstanceSingleCrit$new( # will take parameters dynamically
+  # fsParams is a list of lists that contain appropriate parameters for feature selection. These should be available in man page for the function.
+  # First element of this list is notable since it can/will contain multiple elements.
+  # May need to look into unlisting them from a list format.
+  # We can't simply dedicate more elements of the list because the list will contain varying amount of elements depending on the method chosen.
+
+  instance = FSelectInstanceSingleCrit$new(
     task = task_fs,
     learner = learner,
-    resampling = rsmp("cv", folds = 5),
-    measure = msr("surv.cindex"),
-    terminator = trm("evals", n_evals = 5)
+    resampling = do.call(mlr3::rsmp, fsParams[[1]]),
+    measure = do.call(mlr3::msr, fsParams[[2]]),
+    terminator = do.call(mlr3verse::trm, fsParams[[3]])
   )
 
-  fselector = fs("random_search") # may take parameters
+  fselector = do.call(mlr3verse::fs, fsParams[[4]])
   fselector$optimize(instance)
 
+
   features <- as.vector(instance$result_feature_set)
-
-  data@train <- cbind(data@train[,1], subset(data@train, select=features), data@train$time, data@train$status) # this needs to be cleaned up and be more dynamic
-  data@test <- cbind(data@test[,1], subset(data@test, select=features), data@test$time, data@test$status)
+  data@preprocessed_train <- cbind(subset(data@preprocessed_train, select=features), data@preprocessed_train$time, data@preprocessed_train$status) # this needs to be cleaned up and be more dynamic
+  data@preprocessed_test <- cbind(subset(data@preprocessed_test, select=features), data@preprocessed_test$time, data@preprocessed_test$status)
   # names of the column need to be fixed
-  names(data@train)[names(data@train) == "data@train$time"] <- "time"
-  names(data@train)[names(data@train) == "data@train$status"] <- "status"
-  names(data@test)[names(data@test) == "data@test$time"] <- "time"
-  names(data@test)[names(data@test) == "data@test$status"] <- "status"
+  names(data@preprocessed_train)[names(data@preprocessed_train) == "data@preprocessed_train$time"] <- "time"
+  names(data@preprocessed_train)[names(data@preprocessed_train) == "data@preprocessed_train$status"] <- "status"
+  names(data@preprocessed_test)[names(data@preprocessed_test) == "data@preprocessed_test$time"] <- "time"
+  names(data@preprocessed_test)[names(data@preprocessed_test) == "data@preprocessed_test$status"] <- "status"
 
 
-  task_tune <- TaskSurv$new("task_tune", data@train, time = "time", event = "status")
+  task_tune <- TaskSurv$new("task_tune", data@preprocessed_train, time = "time", event = "status")
 
-  tune_ps = ParamSet$new(paramGrid)
+
+  tune_space <- ParamSet$new(tuneGrid)
 
   at=AutoTuner$new(learner=learner,
-                   resampling=rsmp("repeated_cv", repeats = 10, folds = 5),
-                   measure=msr("surv.cindex"),
-                   terminator=trm("evals", n_evals = 5),
-                   tuner=tnr("random_search"),
-                   search_space = tune_ps
+                   resampling=do.call(mlr3::rsmp, trainParams[[1]]),
+                   measure = do.call(mlr3::msr, trainParams[[2]]),
+                   terminator = do.call(mlr3verse::trm, trainParams[[3]]),
+                   tuner=do.call(mlr3verse::tnr, trainParams[[4]]),
+                   search_space = tune_space
   )
 
   at$train(task_tune)
-  pred_result <- at$predict_newdata(newdata = data@test)$score(measures)
 
+  data@model <- at
+  pred_result <- at$predict_newdata(newdata = data@preprocessed_train)$score(measures)
+  data@cindex_train <- pred_result
+  return(data)
 
 
 
 }
 
-surv.coxboost <- function(data = data, method = "coxboost", preProcessing = preProcessing, paramGrid, ...){
+survival.coxboost <- function(data = data, method = "coxboost", fsParams, trainParams, tuneGrid, ...){
 
   # this function might return an S4 object as data
   # S4 object could contain: train data set, test data set, time column, event column, original data
-  data <- preprocess(data, preProcessing)
+  data <- preprocess(data, "deseq-vst")
 
-  learner <- lrn("surv.coxboost", id = method, mstop = 100, ...) # will take parameters dynamically
+  # double check if this actually works.
+  learner <- lrn("surv.coxboost", id = method, ...) # will take parameters dynamically
 
-  task_fs = TaskSurv$new("task_fs", data@train, time = "time", event = "status")
+  task_fs = TaskSurv$new("task_fs", data@preprocessed_train, time = "time", event = "status")
+  measures = msrs(c("surv.cindex")) # this probably should change with a parameter.
+  # measures = msrs(c("survival.cindex"))
 
-  measures = msrs(c("surv.cindex"))
 
-  instance = FSelectInstanceSingleCrit$new( # will take parameters dynamically
+  # fsParams is a list of lists that contain appropriate parameters for feature selection. These should be available in man page for the function.
+  # First element of this list is notable since it can/will contain multiple elements.
+  # May need to look into unlisting them from a list format.
+  # We can't simply dedicate more elements of the list because the list will contain varying amount of elements depending on the method chosen.
+
+  instance = FSelectInstanceSingleCrit$new(
     task = task_fs,
     learner = learner,
-    resampling = rsmp("cv", folds = 5),
-    measure = msr("surv.cindex"),
-    terminator = trm("evals", n_evals = 5)
+    resampling = do.call(mlr3::rsmp, fsParams[[1]]),
+    measure = do.call(mlr3::msr, fsParams[[2]]),
+    terminator = do.call(mlr3verse::trm, fsParams[[3]])
   )
 
-  fselector = fs("random_search") # may take parameters
+  fselector = do.call(mlr3verse::fs, fsParams[[4]])
   fselector$optimize(instance)
 
+
   features <- as.vector(instance$result_feature_set)
-
-  data@train <- cbind(data@train[,1], subset(data@train, select=features), data@train$time, data@train$status) # this needs to be cleaned up and be more dynamic
-  data@test <- cbind(data@test[,1], subset(data@test, select=features), data@test$time, data@test$status)
+  data@preprocessed_train <- cbind(subset(data@preprocessed_train, select=features), data@preprocessed_train$time, data@preprocessed_train$status) # this needs to be cleaned up and be more dynamic
+  data@preprocessed_test <- cbind(subset(data@preprocessed_test, select=features), data@preprocessed_test$time, data@preprocessed_test$status)
   # names of the column need to be fixed
-  names(data@train)[names(data@train) == "data@train$time"] <- "time"
-  names(data@train)[names(data@train) == "data@train$status"] <- "status"
-  names(data@test)[names(data@test) == "data@test$time"] <- "time"
-  names(data@test)[names(data@test) == "data@test$status"] <- "status"
+  names(data@preprocessed_train)[names(data@preprocessed_train) == "data@preprocessed_train$time"] <- "time"
+  names(data@preprocessed_train)[names(data@preprocessed_train) == "data@preprocessed_train$status"] <- "status"
+  names(data@preprocessed_test)[names(data@preprocessed_test) == "data@preprocessed_test$time"] <- "time"
+  names(data@preprocessed_test)[names(data@preprocessed_test) == "data@preprocessed_test$status"] <- "status"
 
 
-  task_tune <- TaskSurv$new("task_tune", data@train, time = "time", event = "status")
+  task_tune <- TaskSurv$new("task_tune", data@preprocessed_train, time = "time", event = "status")
 
-  tune_ps = ParamSet$new(paramGrid)
+
+  tune_space <- ParamSet$new(tuneGrid)
 
   at=AutoTuner$new(learner=learner,
-                   resampling=rsmp("repeated_cv", repeats = 10, folds = 5),
-                   measure=msr("surv.cindex"),
-                   terminator=trm("evals", n_evals = 5),
-                   tuner=tnr("random_search"),
-                   search_space = tune_ps
+                   resampling=do.call(mlr3::rsmp, trainParams[[1]]),
+                   measure = do.call(mlr3::msr, trainParams[[2]]),
+                   terminator = do.call(mlr3verse::trm, trainParams[[3]]),
+                   tuner=do.call(mlr3verse::tnr, trainParams[[4]]),
+                   search_space = tune_space
   )
 
   at$train(task_tune)
-  pred_result <- at$predict_newdata(newdata = data@test)$score(measures)
 
-
+  data@model <- at
+  pred_result <- at$predict_newdata(newdata = data@preprocessed_train)$score(measures)
+  data@cindex_train <- pred_result
+  return(data)
 
 
 
 }
 
-surv.coxtime <- function(data = data, method = "coxtime", preProcessing = preProcessing, paramGrid, ...){
+survival.coxtime <- function(data = data, method = "coxtime", fsParams, trainParams, tuneGrid, ...){
 
   # this function might return an S4 object as data
   # S4 object could contain: train data set, test data set, time column, event column, original data
-  data <- preprocess(data, preProcessing)
+  data <- preprocess(data, "deseq-vst")
 
-  learner <- lrn("surv.coxtime", id = method, mstop = 100, ...) # will take parameters dynamically
+  # double check if this actually works.
+  learner <- lrn("surv.coxtime", id = method, ...) # will take parameters dynamically
 
-  task_fs = TaskSurv$new("task_fs", data@train, time = "time", event = "status")
+  task_fs = TaskSurv$new("task_fs", data@preprocessed_train, time = "time", event = "status")
+  measures = msrs(c("surv.cindex")) # this probably should change with a parameter.
+  # measures = msrs(c("survival.cindex"))
 
-  measures = msrs(c("surv.cindex"))
 
-  instance = FSelectInstanceSingleCrit$new( # will take parameters dynamically
+  # fsParams is a list of lists that contain appropriate parameters for feature selection. These should be available in man page for the function.
+  # First element of this list is notable since it can/will contain multiple elements.
+  # May need to look into unlisting them from a list format.
+  # We can't simply dedicate more elements of the list because the list will contain varying amount of elements depending on the method chosen.
+
+  instance = FSelectInstanceSingleCrit$new(
     task = task_fs,
     learner = learner,
-    resampling = rsmp("cv", folds = 5),
-    measure = msr("surv.cindex"),
-    terminator = trm("evals", n_evals = 5)
+    resampling = do.call(mlr3::rsmp, fsParams[[1]]),
+    measure = do.call(mlr3::msr, fsParams[[2]]),
+    terminator = do.call(mlr3verse::trm, fsParams[[3]])
   )
 
-  fselector = fs("random_search") # may take parameters
+  fselector = do.call(mlr3verse::fs, fsParams[[4]])
   fselector$optimize(instance)
 
+
   features <- as.vector(instance$result_feature_set)
-
-  data@train <- cbind(data@train[,1], subset(data@train, select=features), data@train$time, data@train$status) # this needs to be cleaned up and be more dynamic
-  data@test <- cbind(data@test[,1], subset(data@test, select=features), data@test$time, data@test$status)
+  data@preprocessed_train <- cbind(subset(data@preprocessed_train, select=features), data@preprocessed_train$time, data@preprocessed_train$status) # this needs to be cleaned up and be more dynamic
+  data@preprocessed_test <- cbind(subset(data@preprocessed_test, select=features), data@preprocessed_test$time, data@preprocessed_test$status)
   # names of the column need to be fixed
-  names(data@train)[names(data@train) == "data@train$time"] <- "time"
-  names(data@train)[names(data@train) == "data@train$status"] <- "status"
-  names(data@test)[names(data@test) == "data@test$time"] <- "time"
-  names(data@test)[names(data@test) == "data@test$status"] <- "status"
+  names(data@preprocessed_train)[names(data@preprocessed_train) == "data@preprocessed_train$time"] <- "time"
+  names(data@preprocessed_train)[names(data@preprocessed_train) == "data@preprocessed_train$status"] <- "status"
+  names(data@preprocessed_test)[names(data@preprocessed_test) == "data@preprocessed_test$time"] <- "time"
+  names(data@preprocessed_test)[names(data@preprocessed_test) == "data@preprocessed_test$status"] <- "status"
 
 
-  task_tune <- TaskSurv$new("task_tune", data@train, time = "time", event = "status")
+  task_tune <- TaskSurv$new("task_tune", data@preprocessed_train, time = "time", event = "status")
 
-  tune_ps = ParamSet$new(paramGrid)
+
+  tune_space <- ParamSet$new(tuneGrid)
 
   at=AutoTuner$new(learner=learner,
-                   resampling=rsmp("repeated_cv", repeats = 10, folds = 5),
-                   measure=msr("surv.cindex"),
-                   terminator=trm("evals", n_evals = 5),
-                   tuner=tnr("random_search"),
-                   search_space = tune_ps
+                   resampling=do.call(mlr3::rsmp, trainParams[[1]]),
+                   measure = do.call(mlr3::msr, trainParams[[2]]),
+                   terminator = do.call(mlr3verse::trm, trainParams[[3]]),
+                   tuner=do.call(mlr3verse::tnr, trainParams[[4]]),
+                   search_space = tune_space
   )
 
   at$train(task_tune)
-  pred_result <- at$predict_newdata(newdata = data@test)$score(measures)
+
+  data@model <- at
+  pred_result <- at$predict_newdata(newdata = data@preprocessed_train)$score(measures)
+  data@cindex_train <- pred_result
+  return(data)
 
 
+}
+
+survival.ctree <- function(data = data, method = "ctree", fsParams, trainParams, tuneGrid, ...){
+
+  # this function might return an S4 object as data
+  # S4 object could contain: train data set, test data set, time column, event column, original data
+  data <- preprocess(data, "deseq-vst")
+
+  # double check if this actually works.
+  learner <- lrn("surv.ctree", id = method, ...) # will take parameters dynamically
+
+  task_fs = TaskSurv$new("task_fs", data@preprocessed_train, time = "time", event = "status")
+  measures = msrs(c("surv.cindex")) # this probably should change with a parameter.
+  # measures = msrs(c("survival.cindex"))
+
+
+  # fsParams is a list of lists that contain appropriate parameters for feature selection. These should be available in man page for the function.
+  # First element of this list is notable since it can/will contain multiple elements.
+  # May need to look into unlisting them from a list format.
+  # We can't simply dedicate more elements of the list because the list will contain varying amount of elements depending on the method chosen.
+
+  instance = FSelectInstanceSingleCrit$new(
+    task = task_fs,
+    learner = learner,
+    resampling = do.call(mlr3::rsmp, fsParams[[1]]),
+    measure = do.call(mlr3::msr, fsParams[[2]]),
+    terminator = do.call(mlr3verse::trm, fsParams[[3]])
+  )
+
+  fselector = do.call(mlr3verse::fs, fsParams[[4]])
+  fselector$optimize(instance)
+
+
+  features <- as.vector(instance$result_feature_set)
+  data@preprocessed_train <- cbind(subset(data@preprocessed_train, select=features), data@preprocessed_train$time, data@preprocessed_train$status) # this needs to be cleaned up and be more dynamic
+  data@preprocessed_test <- cbind(subset(data@preprocessed_test, select=features), data@preprocessed_test$time, data@preprocessed_test$status)
+  # names of the column need to be fixed
+  names(data@preprocessed_train)[names(data@preprocessed_train) == "data@preprocessed_train$time"] <- "time"
+  names(data@preprocessed_train)[names(data@preprocessed_train) == "data@preprocessed_train$status"] <- "status"
+  names(data@preprocessed_test)[names(data@preprocessed_test) == "data@preprocessed_test$time"] <- "time"
+  names(data@preprocessed_test)[names(data@preprocessed_test) == "data@preprocessed_test$status"] <- "status"
+
+
+  task_tune <- TaskSurv$new("task_tune", data@preprocessed_train, time = "time", event = "status")
+
+
+  tune_space <- ParamSet$new(tuneGrid)
+
+  at=AutoTuner$new(learner=learner,
+                   resampling=do.call(mlr3::rsmp, trainParams[[1]]),
+                   measure = do.call(mlr3::msr, trainParams[[2]]),
+                   terminator = do.call(mlr3verse::trm, trainParams[[3]]),
+                   tuner=do.call(mlr3verse::tnr, trainParams[[4]]),
+                   search_space = tune_space
+  )
+  at$train(task_tune)
+
+  data@model <- at
+  pred_result <- at$predict_newdata(newdata = data@preprocessed_train)$score(measures)
+  data@cindex_train <- pred_result
+  return(data)
+
+}
+
+survival.deephit <- function(data = data, method = "deephit", fsParams, trainParams, tuneGrid, ...){
+
+  # this function might return an S4 object as data
+  # S4 object could contain: train data set, test data set, time column, event column, original data
+  data <- preprocess(data, "deseq-vst")
+
+  # double check if this actually works.
+  learner <- lrn("surv.deephit", id = method, ...) # will take parameters dynamically
+
+  task_fs = TaskSurv$new("task_fs", data@preprocessed_train, time = "time", event = "status")
+  measures = msrs(c("surv.cindex")) # this probably should change with a parameter.
+  # measures = msrs(c("survival.cindex"))
+
+
+  # fsParams is a list of lists that contain appropriate parameters for feature selection. These should be available in man page for the function.
+  # First element of this list is notable since it can/will contain multiple elements.
+  # May need to look into unlisting them from a list format.
+  # We can't simply dedicate more elements of the list because the list will contain varying amount of elements depending on the method chosen.
+
+  instance = FSelectInstanceSingleCrit$new(
+    task = task_fs,
+    learner = learner,
+    resampling = do.call(mlr3::rsmp, fsParams[[1]]),
+    measure = do.call(mlr3::msr, fsParams[[2]]),
+    terminator = do.call(mlr3verse::trm, fsParams[[3]])
+  )
+
+  fselector = do.call(mlr3verse::fs, fsParams[[4]])
+  fselector$optimize(instance)
+
+
+  features <- as.vector(instance$result_feature_set)
+  data@preprocessed_train <- cbind(subset(data@preprocessed_train, select=features), data@preprocessed_train$time, data@preprocessed_train$status) # this needs to be cleaned up and be more dynamic
+  data@preprocessed_test <- cbind(subset(data@preprocessed_test, select=features), data@preprocessed_test$time, data@preprocessed_test$status)
+  # names of the column need to be fixed
+  names(data@preprocessed_train)[names(data@preprocessed_train) == "data@preprocessed_train$time"] <- "time"
+  names(data@preprocessed_train)[names(data@preprocessed_train) == "data@preprocessed_train$status"] <- "status"
+  names(data@preprocessed_test)[names(data@preprocessed_test) == "data@preprocessed_test$time"] <- "time"
+  names(data@preprocessed_test)[names(data@preprocessed_test) == "data@preprocessed_test$status"] <- "status"
+
+
+  task_tune <- TaskSurv$new("task_tune", data@preprocessed_train, time = "time", event = "status")
+
+
+  tune_space <- ParamSet$new(tuneGrid)
+
+  at=AutoTuner$new(learner=learner,
+                   resampling=do.call(mlr3::rsmp, trainParams[[1]]),
+                   measure = do.call(mlr3::msr, trainParams[[2]]),
+                   terminator = do.call(mlr3verse::trm, trainParams[[3]]),
+                   tuner=do.call(mlr3verse::tnr, trainParams[[4]]),
+                   search_space = tune_space
+  )
+
+  at$train(task_tune)
+
+  data@model <- at
+  pred_result <- at$predict_newdata(newdata = data@preprocessed_train)$score(measures)
+  data@cindex_train <- pred_result
+  return(data)
 
 
 
 }
 
-surv.ctree <- function(data = data, method = "ctree", preProcessing = preProcessing, paramGrid, ...){
+survival.deepsurv <- function(data = data, method = "deepsurv", fsParams, trainParams, tuneGrid, ...){
 
   # this function might return an S4 object as data
   # S4 object could contain: train data set, test data set, time column, event column, original data
-  data <- preprocess(data, preProcessing)
+  data <- preprocess(data, "deseq-vst")
 
-  learner <- lrn("surv.ctree", id = method, mstop = 100, ...) # will take parameters dynamically
+  # double check if this actually works.
+  learner <- lrn("surv.deepsurv", id = method, ...) # will take parameters dynamically
 
-  task_fs = TaskSurv$new("task_fs", data@train, time = "time", event = "status")
+  task_fs = TaskSurv$new("task_fs", data@preprocessed_train, time = "time", event = "status")
+  measures = msrs(c("surv.cindex")) # this probably should change with a parameter.
+  # measures = msrs(c("survival.cindex"))
 
-  measures = msrs(c("surv.cindex"))
 
-  instance = FSelectInstanceSingleCrit$new( # will take parameters dynamically
+  # fsParams is a list of lists that contain appropriate parameters for feature selection. These should be available in man page for the function.
+  # First element of this list is notable since it can/will contain multiple elements.
+  # May need to look into unlisting them from a list format.
+  # We can't simply dedicate more elements of the list because the list will contain varying amount of elements depending on the method chosen.
+
+  instance = FSelectInstanceSingleCrit$new(
     task = task_fs,
     learner = learner,
-    resampling = rsmp("cv", folds = 5),
-    measure = msr("surv.cindex"),
-    terminator = trm("evals", n_evals = 5)
+    resampling = do.call(mlr3::rsmp, fsParams[[1]]),
+    measure = do.call(mlr3::msr, fsParams[[2]]),
+    terminator = do.call(mlr3verse::trm, fsParams[[3]])
   )
 
-  fselector = fs("random_search") # may take parameters
+  fselector = do.call(mlr3verse::fs, fsParams[[4]])
   fselector$optimize(instance)
 
+
   features <- as.vector(instance$result_feature_set)
-
-  data@train <- cbind(data@train[,1], subset(data@train, select=features), data@train$time, data@train$status) # this needs to be cleaned up and be more dynamic
-  data@test <- cbind(data@test[,1], subset(data@test, select=features), data@test$time, data@test$status)
+  data@preprocessed_train <- cbind(subset(data@preprocessed_train, select=features), data@preprocessed_train$time, data@preprocessed_train$status) # this needs to be cleaned up and be more dynamic
+  data@preprocessed_test <- cbind(subset(data@preprocessed_test, select=features), data@preprocessed_test$time, data@preprocessed_test$status)
   # names of the column need to be fixed
-  names(data@train)[names(data@train) == "data@train$time"] <- "time"
-  names(data@train)[names(data@train) == "data@train$status"] <- "status"
-  names(data@test)[names(data@test) == "data@test$time"] <- "time"
-  names(data@test)[names(data@test) == "data@test$status"] <- "status"
+  names(data@preprocessed_train)[names(data@preprocessed_train) == "data@preprocessed_train$time"] <- "time"
+  names(data@preprocessed_train)[names(data@preprocessed_train) == "data@preprocessed_train$status"] <- "status"
+  names(data@preprocessed_test)[names(data@preprocessed_test) == "data@preprocessed_test$time"] <- "time"
+  names(data@preprocessed_test)[names(data@preprocessed_test) == "data@preprocessed_test$status"] <- "status"
 
 
-  task_tune <- TaskSurv$new("task_tune", data@train, time = "time", event = "status")
+  task_tune <- TaskSurv$new("task_tune", data@preprocessed_train, time = "time", event = "status")
 
-  tune_ps = ParamSet$new(paramGrid)
+
+  tune_space <- ParamSet$new(tuneGrid)
 
   at=AutoTuner$new(learner=learner,
-                   resampling=rsmp("repeated_cv", repeats = 10, folds = 5),
-                   measure=msr("surv.cindex"),
-                   terminator=trm("evals", n_evals = 5),
-                   tuner=tnr("random_search"),
-                   search_space = tune_ps
+                   resampling=do.call(mlr3::rsmp, trainParams[[1]]),
+                   measure = do.call(mlr3::msr, trainParams[[2]]),
+                   terminator = do.call(mlr3verse::trm, trainParams[[3]]),
+                   tuner=do.call(mlr3verse::tnr, trainParams[[4]]),
+                   search_space = tune_space
   )
 
   at$train(task_tune)
-  pred_result <- at$predict_newdata(newdata = data@test)$score(measures)
 
-
+  data@model <- at
+  pred_result <- at$predict_newdata(newdata = data@preprocessed_train)$score(measures)
+  data@cindex_train <- pred_result
+  return(data)
 
 
 
 }
 
-surv.deephit <- function(data = data, method = "deephit", preProcessing = preProcessing, paramGrid, ...){
+survival.elasticnet <- function(data = data, method = "elasticnet", fsParams, trainParams, tuneGrid, ...){
 
   # this function might return an S4 object as data
   # S4 object could contain: train data set, test data set, time column, event column, original data
-  data <- preprocess(data, preProcessing)
+  data <- preprocess(data, "deseq-vst")
 
-  learner <- lrn("surv.deephit", id = method, mstop = 100, ...) # will take parameters dynamically
+  # double check if this actually works.
+  learner <- lrn("surv.glmnet", id = method, ...) # will take parameters dynamically
 
-  task_fs = TaskSurv$new("task_fs", data@train, time = "time", event = "status")
+  task_fs = TaskSurv$new("task_fs", data@preprocessed_train, time = "time", event = "status")
+  measures = msrs(c("surv.cindex")) # this probably should change with a parameter.
+  # measures = msrs(c("survival.cindex"))
 
-  measures = msrs(c("surv.cindex"))
 
-  instance = FSelectInstanceSingleCrit$new( # will take parameters dynamically
+  # fsParams is a list of lists that contain appropriate parameters for feature selection. These should be available in man page for the function.
+  # First element of this list is notable since it can/will contain multiple elements.
+  # May need to look into unlisting them from a list format.
+  # We can't simply dedicate more elements of the list because the list will contain varying amount of elements depending on the method chosen.
+
+  instance = FSelectInstanceSingleCrit$new(
     task = task_fs,
     learner = learner,
-    resampling = rsmp("cv", folds = 5),
-    measure = msr("surv.cindex"),
-    terminator = trm("evals", n_evals = 5)
+    resampling = do.call(mlr3::rsmp, fsParams[[1]]),
+    measure = do.call(mlr3::msr, fsParams[[2]]),
+    terminator = do.call(mlr3verse::trm, fsParams[[3]])
   )
 
-  fselector = fs("random_search") # may take parameters
+  fselector = do.call(mlr3verse::fs, fsParams[[4]])
   fselector$optimize(instance)
 
+
   features <- as.vector(instance$result_feature_set)
-
-  data@train <- cbind(data@train[,1], subset(data@train, select=features), data@train$time, data@train$status) # this needs to be cleaned up and be more dynamic
-  data@test <- cbind(data@test[,1], subset(data@test, select=features), data@test$time, data@test$status)
+  data@preprocessed_train <- cbind(subset(data@preprocessed_train, select=features), data@preprocessed_train$time, data@preprocessed_train$status) # this needs to be cleaned up and be more dynamic
+  data@preprocessed_test <- cbind(subset(data@preprocessed_test, select=features), data@preprocessed_test$time, data@preprocessed_test$status)
   # names of the column need to be fixed
-  names(data@train)[names(data@train) == "data@train$time"] <- "time"
-  names(data@train)[names(data@train) == "data@train$status"] <- "status"
-  names(data@test)[names(data@test) == "data@test$time"] <- "time"
-  names(data@test)[names(data@test) == "data@test$status"] <- "status"
+  names(data@preprocessed_train)[names(data@preprocessed_train) == "data@preprocessed_train$time"] <- "time"
+  names(data@preprocessed_train)[names(data@preprocessed_train) == "data@preprocessed_train$status"] <- "status"
+  names(data@preprocessed_test)[names(data@preprocessed_test) == "data@preprocessed_test$time"] <- "time"
+  names(data@preprocessed_test)[names(data@preprocessed_test) == "data@preprocessed_test$status"] <- "status"
 
 
-  task_tune <- TaskSurv$new("task_tune", data@train, time = "time", event = "status")
+  task_tune <- TaskSurv$new("task_tune", data@preprocessed_train, time = "time", event = "status")
 
-  tune_ps = ParamSet$new(paramGrid)
+
+  tune_space <- ParamSet$new(tuneGrid)
 
   at=AutoTuner$new(learner=learner,
-                   resampling=rsmp("repeated_cv", repeats = 10, folds = 5),
-                   measure=msr("surv.cindex"),
-                   terminator=trm("evals", n_evals = 5),
-                   tuner=tnr("random_search"),
-                   search_space = tune_ps
+                   resampling=do.call(mlr3::rsmp, trainParams[[1]]),
+                   measure = do.call(mlr3::msr, trainParams[[2]]),
+                   terminator = do.call(mlr3verse::trm, trainParams[[3]]),
+                   tuner=do.call(mlr3verse::tnr, trainParams[[4]]),
+                   search_space = tune_space
   )
-
   at$train(task_tune)
-  pred_result <- at$predict_newdata(newdata = data@test)$score(measures)
 
-
+  data@model <- at
+  pred_result <- at$predict_newdata(newdata = data@preprocessed_train)$score(measures)
+  data@cindex_train <- pred_result
+  return(data)
 
 
 
 }
 
-surv.deepsurv <- function(data = data, method = "deepsurv", preProcessing = preProcessing, paramGrid, ...){
+survival.gamboost <- function(data = data, method = "gamboost", fsParams, trainParams, tuneGrid, ...){
 
   # this function might return an S4 object as data
   # S4 object could contain: train data set, test data set, time column, event column, original data
-  data <- preprocess(data, preProcessing)
+  data <- preprocess(data, "deseq-vst")
 
-  learner <- lrn("surv.deepsurv", id = method, mstop = 100, ...) # will take parameters dynamically
+  # double check if this actually works.
+  learner <- lrn("surv.gamboost", id = method, ...) # will take parameters dynamically
 
-  task_fs = TaskSurv$new("task_fs", data@train, time = "time", event = "status")
+  task_fs = TaskSurv$new("task_fs", data@preprocessed_train, time = "time", event = "status")
+  measures = msrs(c("surv.cindex")) # this probably should change with a parameter.
+  # measures = msrs(c("survival.cindex"))
 
-  measures = msrs(c("surv.cindex"))
 
-  instance = FSelectInstanceSingleCrit$new( # will take parameters dynamically
+  # fsParams is a list of lists that contain appropriate parameters for feature selection. These should be available in man page for the function.
+  # First element of this list is notable since it can/will contain multiple elements.
+  # May need to look into unlisting them from a list format.
+  # We can't simply dedicate more elements of the list because the list will contain varying amount of elements depending on the method chosen.
+
+  instance = FSelectInstanceSingleCrit$new(
     task = task_fs,
     learner = learner,
-    resampling = rsmp("cv", folds = 5),
-    measure = msr("surv.cindex"),
-    terminator = trm("evals", n_evals = 5)
+    resampling = do.call(mlr3::rsmp, fsParams[[1]]),
+    measure = do.call(mlr3::msr, fsParams[[2]]),
+    terminator = do.call(mlr3verse::trm, fsParams[[3]])
   )
 
-  fselector = fs("random_search") # may take parameters
+  fselector = do.call(mlr3verse::fs, fsParams[[4]])
   fselector$optimize(instance)
 
+
   features <- as.vector(instance$result_feature_set)
-
-  data@train <- cbind(data@train[,1], subset(data@train, select=features), data@train$time, data@train$status) # this needs to be cleaned up and be more dynamic
-  data@test <- cbind(data@test[,1], subset(data@test, select=features), data@test$time, data@test$status)
+  data@preprocessed_train <- cbind(subset(data@preprocessed_train, select=features), data@preprocessed_train$time, data@preprocessed_train$status) # this needs to be cleaned up and be more dynamic
+  data@preprocessed_test <- cbind(subset(data@preprocessed_test, select=features), data@preprocessed_test$time, data@preprocessed_test$status)
   # names of the column need to be fixed
-  names(data@train)[names(data@train) == "data@train$time"] <- "time"
-  names(data@train)[names(data@train) == "data@train$status"] <- "status"
-  names(data@test)[names(data@test) == "data@test$time"] <- "time"
-  names(data@test)[names(data@test) == "data@test$status"] <- "status"
+  names(data@preprocessed_train)[names(data@preprocessed_train) == "data@preprocessed_train$time"] <- "time"
+  names(data@preprocessed_train)[names(data@preprocessed_train) == "data@preprocessed_train$status"] <- "status"
+  names(data@preprocessed_test)[names(data@preprocessed_test) == "data@preprocessed_test$time"] <- "time"
+  names(data@preprocessed_test)[names(data@preprocessed_test) == "data@preprocessed_test$status"] <- "status"
 
 
-  task_tune <- TaskSurv$new("task_tune", data@train, time = "time", event = "status")
+  task_tune <- TaskSurv$new("task_tune", data@preprocessed_train, time = "time", event = "status")
 
-  tune_ps = ParamSet$new(paramGrid)
+
+  tune_space <- ParamSet$new(tuneGrid)
 
   at=AutoTuner$new(learner=learner,
-                   resampling=rsmp("repeated_cv", repeats = 10, folds = 5),
-                   measure=msr("surv.cindex"),
-                   terminator=trm("evals", n_evals = 5),
-                   tuner=tnr("random_search"),
-                   search_space = tune_ps
+                   resampling=do.call(mlr3::rsmp, trainParams[[1]]),
+                   measure = do.call(mlr3::msr, trainParams[[2]]),
+                   terminator = do.call(mlr3verse::trm, trainParams[[3]]),
+                   tuner=do.call(mlr3verse::tnr, trainParams[[4]]),
+                   search_space = tune_space
   )
 
   at$train(task_tune)
-  pred_result <- at$predict_newdata(newdata = data@test)$score(measures)
 
-
+  data@model <- at
+  pred_result <- at$predict_newdata(newdata = data@preprocessed_train)$score(measures)
+  data@cindex_train <- pred_result
+  return(data)
 
 
 
 }
 
-surv.elasticnet <- function(data = data, method = "elasticnet", preProcessing = preProcessing, paramGrid, ...){
+survival.gbm <- function(data = data, method = "gbm", fsParams, trainParams, tuneGrid, ...){
 
   # this function might return an S4 object as data
   # S4 object could contain: train data set, test data set, time column, event column, original data
-  data <- preprocess(data, preProcessing)
+  data <- preprocess(data, "deseq-vst")
 
-  learner <- lrn("surv.elasticnet", id = method, mstop = 100, ...) # will take parameters dynamically
+  # double check if this actually works.
+  learner <- lrn("surv.gbm", id = method, ...) # will take parameters dynamically
+  task_fs = TaskSurv$new("task_fs", data@preprocessed_train, time = "time", event = "status")
+  measures = msrs(c("surv.cindex")) # this probably should change with a parameter.
+  # measures = msrs(c("survival.cindex"))
 
-  task_fs = TaskSurv$new("task_fs", data@train, time = "time", event = "status")
 
-  measures = msrs(c("surv.cindex"))
+  # fsParams is a list of lists that contain appropriate parameters for feature selection. These should be available in man page for the function.
+  # First element of this list is notable since it can/will contain multiple elements.
+  # May need to look into unlisting them from a list format.
+  # We can't simply dedicate more elements of the list because the list will contain varying amount of elements depending on the method chosen.
 
-  instance = FSelectInstanceSingleCrit$new( # will take parameters dynamically
+  instance = FSelectInstanceSingleCrit$new(
     task = task_fs,
     learner = learner,
-    resampling = rsmp("cv", folds = 5),
-    measure = msr("surv.cindex"),
-    terminator = trm("evals", n_evals = 5)
+    resampling = do.call(mlr3::rsmp, fsParams[[1]]),
+    measure = do.call(mlr3::msr, fsParams[[2]]),
+    terminator = do.call(mlr3verse::trm, fsParams[[3]])
   )
 
-  fselector = fs("random_search") # may take parameters
+  fselector = do.call(mlr3verse::fs, fsParams[[4]])
   fselector$optimize(instance)
 
+
   features <- as.vector(instance$result_feature_set)
-
-  data@train <- cbind(data@train[,1], subset(data@train, select=features), data@train$time, data@train$status) # this needs to be cleaned up and be more dynamic
-  data@test <- cbind(data@test[,1], subset(data@test, select=features), data@test$time, data@test$status)
+  data@preprocessed_train <- cbind(subset(data@preprocessed_train, select=features), data@preprocessed_train$time, data@preprocessed_train$status) # this needs to be cleaned up and be more dynamic
+  data@preprocessed_test <- cbind(subset(data@preprocessed_test, select=features), data@preprocessed_test$time, data@preprocessed_test$status)
   # names of the column need to be fixed
-  names(data@train)[names(data@train) == "data@train$time"] <- "time"
-  names(data@train)[names(data@train) == "data@train$status"] <- "status"
-  names(data@test)[names(data@test) == "data@test$time"] <- "time"
-  names(data@test)[names(data@test) == "data@test$status"] <- "status"
+  names(data@preprocessed_train)[names(data@preprocessed_train) == "data@preprocessed_train$time"] <- "time"
+  names(data@preprocessed_train)[names(data@preprocessed_train) == "data@preprocessed_train$status"] <- "status"
+  names(data@preprocessed_test)[names(data@preprocessed_test) == "data@preprocessed_test$time"] <- "time"
+  names(data@preprocessed_test)[names(data@preprocessed_test) == "data@preprocessed_test$status"] <- "status"
 
 
-  task_tune <- TaskSurv$new("task_tune", data@train, time = "time", event = "status")
+  task_tune <- TaskSurv$new("task_tune", data@preprocessed_train, time = "time", event = "status")
 
-  tune_ps = ParamSet$new(paramGrid)
+
+  tune_space <- ParamSet$new(tuneGrid)
 
   at=AutoTuner$new(learner=learner,
-                   resampling=rsmp("repeated_cv", repeats = 10, folds = 5),
-                   measure=msr("surv.cindex"),
-                   terminator=trm("evals", n_evals = 5),
-                   tuner=tnr("random_search"),
-                   search_space = tune_ps
+                   resampling=do.call(mlr3::rsmp, trainParams[[1]]),
+                   measure = do.call(mlr3::msr, trainParams[[2]]),
+                   terminator = do.call(mlr3verse::trm, trainParams[[3]]),
+                   tuner=do.call(mlr3verse::tnr, trainParams[[4]]),
+                   search_space = tune_space
   )
 
   at$train(task_tune)
-  pred_result <- at$predict_newdata(newdata = data@test)$score(measures)
 
-
+  data@model <- at
+  pred_result <- at$predict_newdata(newdata = data@preprocessed_train)$score(measures)
+  data@cindex_train <- pred_result
+  return(data)
 
 
 
 }
 
-surv.gamboost <- function(data = data, method = "gamboost", preProcessing = preProcessing, paramGrid, ...){
+survival.glmboost <- function(data = data, method = "glmboost", fsParams, trainParams, tuneGrid, ...){
 
   # this function might return an S4 object as data
   # S4 object could contain: train data set, test data set, time column, event column, original data
-  data <- preprocess(data, preProcessing)
+  data <- preprocess(data, "deseq-vst")
 
-  learner <- lrn("surv.gamboost", id = method, mstop = 100, ...) # will take parameters dynamically
+  # double check if this actually works.
+  learner <- lrn("surv.glmboost", id = method, ...) # will take parameters dynamically
 
-  task_fs = TaskSurv$new("task_fs", data@train, time = "time", event = "status")
+  task_fs = TaskSurv$new("task_fs", data@preprocessed_train, time = "time", event = "status")
+  measures = msrs(c("surv.cindex")) # this probably should change with a parameter.
+  # measures = msrs(c("survival.cindex"))
 
-  measures = msrs(c("surv.cindex"))
 
-  instance = FSelectInstanceSingleCrit$new( # will take parameters dynamically
+  # fsParams is a list of lists that contain appropriate parameters for feature selection. These should be available in man page for the function.
+  # First element of this list is notable since it can/will contain multiple elements.
+  # May need to look into unlisting them from a list format.
+  # We can't simply dedicate more elements of the list because the list will contain varying amount of elements depending on the method chosen.
+
+  instance = FSelectInstanceSingleCrit$new(
     task = task_fs,
     learner = learner,
-    resampling = rsmp("cv", folds = 5),
-    measure = msr("surv.cindex"),
-    terminator = trm("evals", n_evals = 5)
+    resampling = do.call(mlr3::rsmp, fsParams[[1]]),
+    measure = do.call(mlr3::msr, fsParams[[2]]),
+    terminator = do.call(mlr3verse::trm, fsParams[[3]])
   )
 
-  fselector = fs("random_search") # may take parameters
+  fselector = do.call(mlr3verse::fs, fsParams[[4]])
   fselector$optimize(instance)
 
+
   features <- as.vector(instance$result_feature_set)
-
-  data@train <- cbind(data@train[,1], subset(data@train, select=features), data@train$time, data@train$status) # this needs to be cleaned up and be more dynamic
-  data@test <- cbind(data@test[,1], subset(data@test, select=features), data@test$time, data@test$status)
+  data@preprocessed_train <- cbind(subset(data@preprocessed_train, select=features), data@preprocessed_train$time, data@preprocessed_train$status) # this needs to be cleaned up and be more dynamic
+  data@preprocessed_test <- cbind(subset(data@preprocessed_test, select=features), data@preprocessed_test$time, data@preprocessed_test$status)
   # names of the column need to be fixed
-  names(data@train)[names(data@train) == "data@train$time"] <- "time"
-  names(data@train)[names(data@train) == "data@train$status"] <- "status"
-  names(data@test)[names(data@test) == "data@test$time"] <- "time"
-  names(data@test)[names(data@test) == "data@test$status"] <- "status"
+  names(data@preprocessed_train)[names(data@preprocessed_train) == "data@preprocessed_train$time"] <- "time"
+  names(data@preprocessed_train)[names(data@preprocessed_train) == "data@preprocessed_train$status"] <- "status"
+  names(data@preprocessed_test)[names(data@preprocessed_test) == "data@preprocessed_test$time"] <- "time"
+  names(data@preprocessed_test)[names(data@preprocessed_test) == "data@preprocessed_test$status"] <- "status"
 
 
-  task_tune <- TaskSurv$new("task_tune", data@train, time = "time", event = "status")
+  task_tune <- TaskSurv$new("task_tune", data@preprocessed_train, time = "time", event = "status")
 
-  tune_ps = ParamSet$new(paramGrid)
+
+  tune_space <- ParamSet$new(tuneGrid)
 
   at=AutoTuner$new(learner=learner,
-                   resampling=rsmp("repeated_cv", repeats = 10, folds = 5),
-                   measure=msr("surv.cindex"),
-                   terminator=trm("evals", n_evals = 5),
-                   tuner=tnr("random_search"),
-                   search_space = tune_ps
+                   resampling=do.call(mlr3::rsmp, trainParams[[1]]),
+                   measure = do.call(mlr3::msr, trainParams[[2]]),
+                   terminator = do.call(mlr3verse::trm, trainParams[[3]]),
+                   tuner=do.call(mlr3verse::tnr, trainParams[[4]]),
+                   search_space = tune_space
   )
 
   at$train(task_tune)
-  pred_result <- at$predict_newdata(newdata = data@test)$score(measures)
+
+  data@model <- at
+  pred_result <- at$predict_newdata(newdata = data@preprocessed_train)$score(measures)
+  data@cindex_train <- pred_result
+  return(data)
 
 
+}
+
+survival.lasso <- function(data = data, method = "lasso", fsParams, trainParams, tuneGrid, ...){
+
+  # this function might return an S4 object as data
+  # S4 object could contain: train data set, test data set, time column, event column, original data
+  data <- preprocess(data, "deseq-vst")
+
+  # double check if this actually works.
+  learner <- lrn("surv.glmnet", id = method, ...) # will take parameters dynamically
+
+  task_fs = TaskSurv$new("task_fs", data@preprocessed_train, time = "time", event = "status")
+  measures = msrs(c("surv.cindex")) # this probably should change with a parameter.
+  # measures = msrs(c("survival.cindex"))
+
+
+  # fsParams is a list of lists that contain appropriate parameters for feature selection. These should be available in man page for the function.
+  # First element of this list is notable since it can/will contain multiple elements.
+  # May need to look into unlisting them from a list format.
+  # We can't simply dedicate more elements of the list because the list will contain varying amount of elements depending on the method chosen.
+
+  instance = FSelectInstanceSingleCrit$new(
+    task = task_fs,
+    learner = learner,
+    resampling = do.call(mlr3::rsmp, fsParams[[1]]),
+    measure = do.call(mlr3::msr, fsParams[[2]]),
+    terminator = do.call(mlr3verse::trm, fsParams[[3]])
+  )
+
+  fselector = do.call(mlr3verse::fs, fsParams[[4]])
+  fselector$optimize(instance)
+
+
+  features <- as.vector(instance$result_feature_set)
+  data@preprocessed_train <- cbind(subset(data@preprocessed_train, select=features), data@preprocessed_train$time, data@preprocessed_train$status) # this needs to be cleaned up and be more dynamic
+  data@preprocessed_test <- cbind(subset(data@preprocessed_test, select=features), data@preprocessed_test$time, data@preprocessed_test$status)
+  # names of the column need to be fixed
+  names(data@preprocessed_train)[names(data@preprocessed_train) == "data@preprocessed_train$time"] <- "time"
+  names(data@preprocessed_train)[names(data@preprocessed_train) == "data@preprocessed_train$status"] <- "status"
+  names(data@preprocessed_test)[names(data@preprocessed_test) == "data@preprocessed_test$time"] <- "time"
+  names(data@preprocessed_test)[names(data@preprocessed_test) == "data@preprocessed_test$status"] <- "status"
+
+
+  task_tune <- TaskSurv$new("task_tune", data@preprocessed_train, time = "time", event = "status")
+
+
+  tune_space <- ParamSet$new(tuneGrid)
+
+  at=AutoTuner$new(learner=learner,
+                   resampling=do.call(mlr3::rsmp, trainParams[[1]]),
+                   measure = do.call(mlr3::msr, trainParams[[2]]),
+                   terminator = do.call(mlr3verse::trm, trainParams[[3]]),
+                   tuner=do.call(mlr3verse::tnr, trainParams[[4]]),
+                   search_space = tune_space
+  )
+
+  at$train(task_tune)
+
+  data@model <- at
+  pred_result <- at$predict_newdata(newdata = data@preprocessed_train)$score(measures)
+  data@cindex_train <- pred_result
+  return(data)
 
 
 
 }
 
-surv.gbm <- function(data = data, method = "gbm", preProcessing = preProcessing, paramGrid, ...){
+survival.loghaz <- function(data = data, method = "loghaz", fsParams, trainParams, tuneGrid, ...){
 
   # this function might return an S4 object as data
   # S4 object could contain: train data set, test data set, time column, event column, original data
-  data <- preprocess(data, preProcessing)
+  data <- preprocess(data, "deseq-vst")
 
-  learner <- lrn("surv.gbm", id = method, mstop = 100, ...) # will take parameters dynamically
+  # double check if this actually works.
+  learner <- lrn("surv.loghaz", id = method, ...) # will take parameters dynamically
 
-  task_fs = TaskSurv$new("task_fs", data@train, time = "time", event = "status")
+  task_fs = TaskSurv$new("task_fs", data@preprocessed_train, time = "time", event = "status")
+  measures = msrs(c("surv.cindex")) # this probably should change with a parameter.
+  # measures = msrs(c("survival.cindex"))
 
-  measures = msrs(c("surv.cindex"))
 
-  instance = FSelectInstanceSingleCrit$new( # will take parameters dynamically
+  # fsParams is a list of lists that contain appropriate parameters for feature selection. These should be available in man page for the function.
+  # First element of this list is notable since it can/will contain multiple elements.
+  # May need to look into unlisting them from a list format.
+  # We can't simply dedicate more elements of the list because the list will contain varying amount of elements depending on the method chosen.
+
+  instance = FSelectInstanceSingleCrit$new(
     task = task_fs,
     learner = learner,
-    resampling = rsmp("cv", folds = 5),
-    measure = msr("surv.cindex"),
-    terminator = trm("evals", n_evals = 5)
+    resampling = do.call(mlr3::rsmp, fsParams[[1]]),
+    measure = do.call(mlr3::msr, fsParams[[2]]),
+    terminator = do.call(mlr3verse::trm, fsParams[[3]])
   )
 
-  fselector = fs("random_search") # may take parameters
+  fselector = do.call(mlr3verse::fs, fsParams[[4]])
   fselector$optimize(instance)
 
+
   features <- as.vector(instance$result_feature_set)
-
-  data@train <- cbind(data@train[,1], subset(data@train, select=features), data@train$time, data@train$status) # this needs to be cleaned up and be more dynamic
-  data@test <- cbind(data@test[,1], subset(data@test, select=features), data@test$time, data@test$status)
+  data@preprocessed_train <- cbind(subset(data@preprocessed_train, select=features), data@preprocessed_train$time, data@preprocessed_train$status) # this needs to be cleaned up and be more dynamic
+  data@preprocessed_test <- cbind(subset(data@preprocessed_test, select=features), data@preprocessed_test$time, data@preprocessed_test$status)
   # names of the column need to be fixed
-  names(data@train)[names(data@train) == "data@train$time"] <- "time"
-  names(data@train)[names(data@train) == "data@train$status"] <- "status"
-  names(data@test)[names(data@test) == "data@test$time"] <- "time"
-  names(data@test)[names(data@test) == "data@test$status"] <- "status"
+  names(data@preprocessed_train)[names(data@preprocessed_train) == "data@preprocessed_train$time"] <- "time"
+  names(data@preprocessed_train)[names(data@preprocessed_train) == "data@preprocessed_train$status"] <- "status"
+  names(data@preprocessed_test)[names(data@preprocessed_test) == "data@preprocessed_test$time"] <- "time"
+  names(data@preprocessed_test)[names(data@preprocessed_test) == "data@preprocessed_test$status"] <- "status"
 
 
-  task_tune <- TaskSurv$new("task_tune", data@train, time = "time", event = "status")
+  task_tune <- TaskSurv$new("task_tune", data@preprocessed_train, time = "time", event = "status")
 
-  tune_ps = ParamSet$new(paramGrid)
+
+  tune_space <- ParamSet$new(tuneGrid)
 
   at=AutoTuner$new(learner=learner,
-                   resampling=rsmp("repeated_cv", repeats = 10, folds = 5),
-                   measure=msr("surv.cindex"),
-                   terminator=trm("evals", n_evals = 5),
-                   tuner=tnr("random_search"),
-                   search_space = tune_ps
+                   resampling=do.call(mlr3::rsmp, trainParams[[1]]),
+                   measure = do.call(mlr3::msr, trainParams[[2]]),
+                   terminator = do.call(mlr3verse::trm, trainParams[[3]]),
+                   tuner=do.call(mlr3verse::tnr, trainParams[[4]]),
+                   search_space = tune_space
   )
 
   at$train(task_tune)
-  pred_result <- at$predict_newdata(newdata = data@test)$score(measures)
+
+  data@model <- at
+  pred_result <- at$predict_newdata(newdata = data@preprocessed_train)$score(measures)
+  data@cindex_train <- pred_result
+  return(data)
 
 
+}
+
+survival.mboost <- function(data = data, method = "mboost", fsParams, trainParams, tuneGrid, ...){
+
+  # this function might return an S4 object as data
+  # S4 object could contain: train data set, test data set, time column, event column, original data
+  data <- preprocess(data, "deseq-vst")
+
+  # double check if this actually works.
+  learner <- lrn("surv.mboost", id = method, ...) # will take parameters dynamically
+
+  task_fs = TaskSurv$new("task_fs", data@preprocessed_train, time = "time", event = "status")
+  measures = msrs(c("surv.cindex")) # this probably should change with a parameter.
+  # measures = msrs(c("survival.cindex"))
+
+
+  # fsParams is a list of lists that contain appropriate parameters for feature selection. These should be available in man page for the function.
+  # First element of this list is notable since it can/will contain multiple elements.
+  # May need to look into unlisting them from a list format.
+  # We can't simply dedicate more elements of the list because the list will contain varying amount of elements depending on the method chosen.
+
+  instance = FSelectInstanceSingleCrit$new(
+    task = task_fs,
+    learner = learner,
+    resampling = do.call(mlr3::rsmp, fsParams[[1]]),
+    measure = do.call(mlr3::msr, fsParams[[2]]),
+    terminator = do.call(mlr3verse::trm, fsParams[[3]])
+  )
+
+  fselector = do.call(mlr3verse::fs, fsParams[[4]])
+  fselector$optimize(instance)
+
+
+  features <- as.vector(instance$result_feature_set)
+  data@preprocessed_train <- cbind(subset(data@preprocessed_train, select=features), data@preprocessed_train$time, data@preprocessed_train$status) # this needs to be cleaned up and be more dynamic
+  data@preprocessed_test <- cbind(subset(data@preprocessed_test, select=features), data@preprocessed_test$time, data@preprocessed_test$status)
+  # names of the column need to be fixed
+  names(data@preprocessed_train)[names(data@preprocessed_train) == "data@preprocessed_train$time"] <- "time"
+  names(data@preprocessed_train)[names(data@preprocessed_train) == "data@preprocessed_train$status"] <- "status"
+  names(data@preprocessed_test)[names(data@preprocessed_test) == "data@preprocessed_test$time"] <- "time"
+  names(data@preprocessed_test)[names(data@preprocessed_test) == "data@preprocessed_test$status"] <- "status"
+
+
+  task_tune <- TaskSurv$new("task_tune", data@preprocessed_train, time = "time", event = "status")
+
+
+  tune_space <- ParamSet$new(tuneGrid)
+
+  at=AutoTuner$new(learner=learner,
+                   resampling=do.call(mlr3::rsmp, trainParams[[1]]),
+                   measure = do.call(mlr3::msr, trainParams[[2]]),
+                   terminator = do.call(mlr3verse::trm, trainParams[[3]]),
+                   tuner=do.call(mlr3verse::tnr, trainParams[[4]]),
+                   search_space = tune_space
+  )
+  at$train(task_tune)
+
+  data@model <- at
+  pred_result <- at$predict_newdata(newdata = data@preprocessed_train)$score(measures)
+  data@cindex_train <- pred_result
+  return(data)
+
+
+}
+
+survival.obliqueRSF <- function(data = data, method = "obliqueRSF", fsParams, trainParams, tuneGrid, ...){
+
+  # this function might return an S4 object as data
+  # S4 object could contain: train data set, test data set, time column, event column, original data
+  data <- preprocess(data, "deseq-vst")
+
+  # double check if this actually works.
+  learner <- lrn("surv.obliqueRSF", id = method, ...) # will take parameters dynamically
+
+  task_fs = TaskSurv$new("task_fs", data@preprocessed_train, time = "time", event = "status")
+  measures = msrs(c("surv.cindex")) # this probably should change with a parameter.
+  # measures = msrs(c("survival.cindex"))
+
+
+  # fsParams is a list of lists that contain appropriate parameters for feature selection. These should be available in man page for the function.
+  # First element of this list is notable since it can/will contain multiple elements.
+  # May need to look into unlisting them from a list format.
+  # We can't simply dedicate more elements of the list because the list will contain varying amount of elements depending on the method chosen.
+
+  instance = FSelectInstanceSingleCrit$new(
+    task = task_fs,
+    learner = learner,
+    resampling = do.call(mlr3::rsmp, fsParams[[1]]),
+    measure = do.call(mlr3::msr, fsParams[[2]]),
+    terminator = do.call(mlr3verse::trm, fsParams[[3]])
+  )
+
+  fselector = do.call(mlr3verse::fs, fsParams[[4]])
+  fselector$optimize(instance)
+
+
+  features <- as.vector(instance$result_feature_set)
+  data@preprocessed_train <- cbind(subset(data@preprocessed_train, select=features), data@preprocessed_train$time, data@preprocessed_train$status) # this needs to be cleaned up and be more dynamic
+  data@preprocessed_test <- cbind(subset(data@preprocessed_test, select=features), data@preprocessed_test$time, data@preprocessed_test$status)
+  # names of the column need to be fixed
+  names(data@preprocessed_train)[names(data@preprocessed_train) == "data@preprocessed_train$time"] <- "time"
+  names(data@preprocessed_train)[names(data@preprocessed_train) == "data@preprocessed_train$status"] <- "status"
+  names(data@preprocessed_test)[names(data@preprocessed_test) == "data@preprocessed_test$time"] <- "time"
+  names(data@preprocessed_test)[names(data@preprocessed_test) == "data@preprocessed_test$status"] <- "status"
+
+
+  task_tune <- TaskSurv$new("task_tune", data@preprocessed_train, time = "time", event = "status")
+
+
+  tune_space <- ParamSet$new(tuneGrid)
+
+  at=AutoTuner$new(learner=learner,
+                   resampling=do.call(mlr3::rsmp, trainParams[[1]]),
+                   measure = do.call(mlr3::msr, trainParams[[2]]),
+                   terminator = do.call(mlr3verse::trm, trainParams[[3]]),
+                   tuner=do.call(mlr3verse::tnr, trainParams[[4]]),
+                   search_space = tune_space
+  )
+
+  at$train(task_tune)
+
+  data@model <- at
+  pred_result <- at$predict_newdata(newdata = data@preprocessed_train)$score(measures)
+  data@cindex_train <- pred_result
+  return(data)
+
+}
+
+survival.pchazard <- function(data = data, method = "pchazard", fsParams, trainParams, tuneGrid, ...){
+
+  # this function might return an S4 object as data
+  # S4 object could contain: train data set, test data set, time column, event column, original data
+  data <- preprocess(data, "deseq-vst")
+
+  # double check if this actually works.
+  learner <- lrn("surv.pchazard", id = method, ...) # will take parameters dynamically
+  task_fs = TaskSurv$new("task_fs", data@preprocessed_train, time = "time", event = "status")
+  measures = msrs(c("surv.cindex")) # this probably should change with a parameter.
+  # measures = msrs(c("survival.cindex"))
+
+
+  # fsParams is a list of lists that contain appropriate parameters for feature selection. These should be available in man page for the function.
+  # First element of this list is notable since it can/will contain multiple elements.
+  # May need to look into unlisting them from a list format.
+  # We can't simply dedicate more elements of the list because the list will contain varying amount of elements depending on the method chosen.
+
+  instance = FSelectInstanceSingleCrit$new(
+    task = task_fs,
+    learner = learner,
+    resampling = do.call(mlr3::rsmp, fsParams[[1]]),
+    measure = do.call(mlr3::msr, fsParams[[2]]),
+    terminator = do.call(mlr3verse::trm, fsParams[[3]])
+  )
+
+  fselector = do.call(mlr3verse::fs, fsParams[[4]])
+  fselector$optimize(instance)
+
+
+  features <- as.vector(instance$result_feature_set)
+  data@preprocessed_train <- cbind(subset(data@preprocessed_train, select=features), data@preprocessed_train$time, data@preprocessed_train$status) # this needs to be cleaned up and be more dynamic
+  data@preprocessed_test <- cbind(subset(data@preprocessed_test, select=features), data@preprocessed_test$time, data@preprocessed_test$status)
+  # names of the column need to be fixed
+  names(data@preprocessed_train)[names(data@preprocessed_train) == "data@preprocessed_train$time"] <- "time"
+  names(data@preprocessed_train)[names(data@preprocessed_train) == "data@preprocessed_train$status"] <- "status"
+  names(data@preprocessed_test)[names(data@preprocessed_test) == "data@preprocessed_test$time"] <- "time"
+  names(data@preprocessed_test)[names(data@preprocessed_test) == "data@preprocessed_test$status"] <- "status"
+
+
+  task_tune <- TaskSurv$new("task_tune", data@preprocessed_train, time = "time", event = "status")
+
+
+  tune_space <- ParamSet$new(tuneGrid)
+
+  at=AutoTuner$new(learner=learner,
+                   resampling=do.call(mlr3::rsmp, trainParams[[1]]),
+                   measure = do.call(mlr3::msr, trainParams[[2]]),
+                   terminator = do.call(mlr3verse::trm, trainParams[[3]]),
+                   tuner=do.call(mlr3verse::tnr, trainParams[[4]]),
+                   search_space = tune_space
+  )
+
+  at$train(task_tune)
+
+  data@model <- at
+  pred_result <- at$predict_newdata(newdata = data@preprocessed_train)$score(measures)
+  data@cindex_train <- pred_result
+  return(data)
 
 
 
 }
 
-surv.glmboost <- function(data = data, method = "glmboost", preProcessing = preProcessing, paramGrid, ...){
+survival.penalized <- function(data = data, method = "penalized", fsParams, trainParams, tuneGrid, ...){
 
   # this function might return an S4 object as data
   # S4 object could contain: train data set, test data set, time column, event column, original data
-  data <- preprocess(data, preProcessing)
+  data <- preprocess(data, "deseq-vst")
 
-  learner <- lrn("surv.glmboost", id = method, mstop = 100, ...) # will take parameters dynamically
+  # double check if this actually works.
+  learner <- lrn("surv.penalized", id = method, ...) # will take parameters dynamically
 
-  task_fs = TaskSurv$new("task_fs", data@train, time = "time", event = "status")
+  task_fs = TaskSurv$new("task_fs", data@preprocessed_train, time = "time", event = "status")
+  measures = msrs(c("surv.cindex")) # this probably should change with a parameter.
+  # measures = msrs(c("survival.cindex"))
 
-  measures = msrs(c("surv.cindex"))
 
-  instance = FSelectInstanceSingleCrit$new( # will take parameters dynamically
+  # fsParams is a list of lists that contain appropriate parameters for feature selection. These should be available in man page for the function.
+  # First element of this list is notable since it can/will contain multiple elements.
+  # May need to look into unlisting them from a list format.
+  # We can't simply dedicate more elements of the list because the list will contain varying amount of elements depending on the method chosen.
+
+  instance = FSelectInstanceSingleCrit$new(
     task = task_fs,
     learner = learner,
-    resampling = rsmp("cv", folds = 5),
-    measure = msr("surv.cindex"),
-    terminator = trm("evals", n_evals = 5)
+    resampling = do.call(mlr3::rsmp, fsParams[[1]]),
+    measure = do.call(mlr3::msr, fsParams[[2]]),
+    terminator = do.call(mlr3verse::trm, fsParams[[3]])
   )
 
-  fselector = fs("random_search") # may take parameters
+  fselector = do.call(mlr3verse::fs, fsParams[[4]])
   fselector$optimize(instance)
 
+
   features <- as.vector(instance$result_feature_set)
-
-  data@train <- cbind(data@train[,1], subset(data@train, select=features), data@train$time, data@train$status) # this needs to be cleaned up and be more dynamic
-  data@test <- cbind(data@test[,1], subset(data@test, select=features), data@test$time, data@test$status)
+  data@preprocessed_train <- cbind(subset(data@preprocessed_train, select=features), data@preprocessed_train$time, data@preprocessed_train$status) # this needs to be cleaned up and be more dynamic
+  data@preprocessed_test <- cbind(subset(data@preprocessed_test, select=features), data@preprocessed_test$time, data@preprocessed_test$status)
   # names of the column need to be fixed
-  names(data@train)[names(data@train) == "data@train$time"] <- "time"
-  names(data@train)[names(data@train) == "data@train$status"] <- "status"
-  names(data@test)[names(data@test) == "data@test$time"] <- "time"
-  names(data@test)[names(data@test) == "data@test$status"] <- "status"
+  names(data@preprocessed_train)[names(data@preprocessed_train) == "data@preprocessed_train$time"] <- "time"
+  names(data@preprocessed_train)[names(data@preprocessed_train) == "data@preprocessed_train$status"] <- "status"
+  names(data@preprocessed_test)[names(data@preprocessed_test) == "data@preprocessed_test$time"] <- "time"
+  names(data@preprocessed_test)[names(data@preprocessed_test) == "data@preprocessed_test$status"] <- "status"
 
 
-  task_tune <- TaskSurv$new("task_tune", data@train, time = "time", event = "status")
+  task_tune <- TaskSurv$new("task_tune", data@preprocessed_train, time = "time", event = "status")
 
-  tune_ps = ParamSet$new(paramGrid)
+
+  tune_space <- ParamSet$new(tuneGrid)
 
   at=AutoTuner$new(learner=learner,
-                   resampling=rsmp("repeated_cv", repeats = 10, folds = 5),
-                   measure=msr("surv.cindex"),
-                   terminator=trm("evals", n_evals = 5),
-                   tuner=tnr("random_search"),
-                   search_space = tune_ps
+                   resampling=do.call(mlr3::rsmp, trainParams[[1]]),
+                   measure = do.call(mlr3::msr, trainParams[[2]]),
+                   terminator = do.call(mlr3verse::trm, trainParams[[3]]),
+                   tuner=do.call(mlr3verse::tnr, trainParams[[4]]),
+                   search_space = tune_space
   )
 
   at$train(task_tune)
-  pred_result <- at$predict_newdata(newdata = data@test)$score(measures)
+
+  data@model <- at
+  pred_result <- at$predict_newdata(newdata = data@preprocessed_train)$score(measures)
+  data@cindex_train <- pred_result
+  return(data)
+
+}
+
+survival.ranger <- function(data = data, method = "ranger", fsParams, trainParams, tuneGrid, ...){
+
+  # this function might return an S4 object as data
+  # S4 object could contain: train data set, test data set, time column, event column, original data
+  data <- preprocess(data, "deseq-vst")
+
+  # double check if this actually works.
+  learner <- lrn("surv.ranger", id = method, ...) # will take parameters dynamically
+
+  task_fs = TaskSurv$new("task_fs", data@preprocessed_train, time = "time", event = "status")
+  measures = msrs(c("surv.cindex")) # this probably should change with a parameter.
+  # measures = msrs(c("survival.cindex"))
 
 
+  # fsParams is a list of lists that contain appropriate parameters for feature selection. These should be available in man page for the function.
+  # First element of this list is notable since it can/will contain multiple elements.
+  # May need to look into unlisting them from a list format.
+  # We can't simply dedicate more elements of the list because the list will contain varying amount of elements depending on the method chosen.
+
+  instance = FSelectInstanceSingleCrit$new(
+    task = task_fs,
+    learner = learner,
+    resampling = do.call(mlr3::rsmp, fsParams[[1]]),
+    measure = do.call(mlr3::msr, fsParams[[2]]),
+    terminator = do.call(mlr3verse::trm, fsParams[[3]])
+  )
+
+  fselector = do.call(mlr3verse::fs, fsParams[[4]])
+  fselector$optimize(instance)
+
+
+  features <- as.vector(instance$result_feature_set)
+  data@preprocessed_train <- cbind(subset(data@preprocessed_train, select=features), data@preprocessed_train$time, data@preprocessed_train$status) # this needs to be cleaned up and be more dynamic
+  data@preprocessed_test <- cbind(subset(data@preprocessed_test, select=features), data@preprocessed_test$time, data@preprocessed_test$status)
+  # names of the column need to be fixed
+  names(data@preprocessed_train)[names(data@preprocessed_train) == "data@preprocessed_train$time"] <- "time"
+  names(data@preprocessed_train)[names(data@preprocessed_train) == "data@preprocessed_train$status"] <- "status"
+  names(data@preprocessed_test)[names(data@preprocessed_test) == "data@preprocessed_test$time"] <- "time"
+  names(data@preprocessed_test)[names(data@preprocessed_test) == "data@preprocessed_test$status"] <- "status"
+
+
+  task_tune <- TaskSurv$new("task_tune", data@preprocessed_train, time = "time", event = "status")
+
+  tune_space <- ParamSet$new(tuneGrid)
+
+  at=AutoTuner$new(learner=learner,
+                   resampling=do.call(mlr3::rsmp, trainParams[[1]]),
+                   measure = do.call(mlr3::msr, trainParams[[2]]),
+                   terminator = do.call(mlr3verse::trm, trainParams[[3]]),
+                   tuner=do.call(mlr3verse::tnr, trainParams[[4]]),
+                   search_space = tune_space
+  )
+
+  at$train(task_tune)
+
+  data@model <- at
+  pred_result <- at$predict_newdata(newdata = data@preprocessed_train)$score(measures)
+  data@cindex_train <- pred_result
+  return(data)
 
 
 
 }
 
-surv.lasso <- function(data = data, method = "lasso", preProcessing = preProcessing, paramGrid, ...){
+survival.rfsrc <- function(data = data, method = "rfsrc", fsParams, trainParams, tuneGrid, ...){
 
   # this function might return an S4 object as data
   # S4 object could contain: train data set, test data set, time column, event column, original data
-  data <- preprocess(data, preProcessing)
+  data <- preprocess(data, "deseq-vst")
 
-  learner <- lrn("surv.lasso", id = method, mstop = 100, ...) # will take parameters dynamically
+  # double check if this actually works.
 
-  task_fs = TaskSurv$new("task_fs", data@train, time = "time", event = "status")
+  learner <- lrn("surv.rfsrc", id = method, ...) # will take parameters dynamically
 
-  measures = msrs(c("surv.cindex"))
 
-  instance = FSelectInstanceSingleCrit$new( # will take parameters dynamically
+
+  task_fs = TaskSurv$new("task_fs", data@preprocessed_train, time = "time", event = "status")
+  measures = msrs(c("surv.cindex")) # this probably should change with a parameter.
+  # measures = msrs(c("survival.cindex"))
+
+
+  # fsParams is a list of lists that contain appropriate parameters for feature selection. These should be available in man page for the function.
+  # First element of this list is notable since it can/will contain multiple elements.
+  # May need to look into unlisting them from a list format.
+  # We can't simply dedicate more elements of the list because the list will contain varying amount of elements depending on the method chosen.
+
+
+
+  instance = FSelectInstanceSingleCrit$new(
     task = task_fs,
     learner = learner,
-    resampling = rsmp("cv", folds = 5),
-    measure = msr("surv.cindex"),
-    terminator = trm("evals", n_evals = 5)
+    resampling = do.call(mlr3::rsmp, fsParams[[1]]),
+    measure = do.call(mlr3::msr, fsParams[[2]]),
+    terminator = do.call(mlr3verse::trm, fsParams[[3]])
   )
 
-  fselector = fs("random_search") # may take parameters
+  fselector = do.call(mlr3verse::fs, fsParams[[4]])
   fselector$optimize(instance)
+  #
 
+  #
   features <- as.vector(instance$result_feature_set)
-
-  data@train <- cbind(data@train[,1], subset(data@train, select=features), data@train$time, data@train$status) # this needs to be cleaned up and be more dynamic
-  data@test <- cbind(data@test[,1], subset(data@test, select=features), data@test$time, data@test$status)
+  data@preprocessed_train <- cbind(subset(data@preprocessed_train, select=features), data@preprocessed_train$time, data@preprocessed_train$status) # this needs to be cleaned up and be more dynamic
+  data@preprocessed_test <- cbind(subset(data@preprocessed_test, select=features), data@preprocessed_test$time, data@preprocessed_test$status)
   # names of the column need to be fixed
-  names(data@train)[names(data@train) == "data@train$time"] <- "time"
-  names(data@train)[names(data@train) == "data@train$status"] <- "status"
-  names(data@test)[names(data@test) == "data@test$time"] <- "time"
-  names(data@test)[names(data@test) == "data@test$status"] <- "status"
+  names(data@preprocessed_train)[names(data@preprocessed_train) == "data@preprocessed_train$time"] <- "time"
+  names(data@preprocessed_train)[names(data@preprocessed_train) == "data@preprocessed_train$status"] <- "status"
+  names(data@preprocessed_test)[names(data@preprocessed_test) == "data@preprocessed_test$time"] <- "time"
+  names(data@preprocessed_test)[names(data@preprocessed_test) == "data@preprocessed_test$status"] <- "status"
 
 
-  task_tune <- TaskSurv$new("task_tune", data@train, time = "time", event = "status")
+  task_tune <- TaskSurv$new("task_tune", data@preprocessed_train, time = "time", event = "status")
 
-  tune_ps = ParamSet$new(paramGrid)
+  #
+  tune_space <- ParamSet$new(tuneGrid)
 
   at=AutoTuner$new(learner=learner,
-                   resampling=rsmp("repeated_cv", repeats = 10, folds = 5),
-                   measure=msr("surv.cindex"),
-                   terminator=trm("evals", n_evals = 5),
-                   tuner=tnr("random_search"),
-                   search_space = tune_ps
+                   resampling=do.call(mlr3::rsmp, trainParams[[1]]),
+                   measure = do.call(mlr3::msr, trainParams[[2]]),
+                   terminator = do.call(mlr3verse::trm, trainParams[[3]]),
+                   tuner=do.call(mlr3verse::tnr, trainParams[[4]]),
+                   search_space = tune_space
   )
 
   at$train(task_tune)
-  pred_result <- at$predict_newdata(newdata = data@test)$score(measures)
+
+  data@model <- at
+  pred_result <- at$predict_newdata(newdata = data@preprocessed_train)$score(measures)
+  data@cindex_train <- pred_result
+  return(data)
+
+}
+
+survival.ridge <- function(data = data, method = "ridge", fsParams, trainParams, tuneGrid, ...){
+
+  # this function might return an S4 object as data
+  # S4 object could contain: train data set, test data set, time column, event column, original data
+  data <- preprocess(data, "deseq-vst")
+
+  # double check if this actually works.
+  learner <- lrn("surv.glmnet", id = method, ...) # will take parameters dynamically
+
+  task_fs = TaskSurv$new("task_fs", data@preprocessed_train, time = "time", event = "status")
+  measures = msrs(c("surv.cindex")) # this probably should change with a parameter.
+  # measures = msrs(c("survival.cindex"))
 
 
+  # fsParams is a list of lists that contain appropriate parameters for feature selection. These should be available in man page for the function.
+  # First element of this list is notable since it can/will contain multiple elements.
+  # May need to look into unlisting them from a list format.
+  # We can't simply dedicate more elements of the list because the list will contain varying amount of elements depending on the method chosen.
 
+  instance = FSelectInstanceSingleCrit$new(
+    task = task_fs,
+    learner = learner,
+    resampling = do.call(mlr3::rsmp, fsParams[[1]]),
+    measure = do.call(mlr3::msr, fsParams[[2]]),
+    terminator = do.call(mlr3verse::trm, fsParams[[3]])
+  )
+
+  fselector = do.call(mlr3verse::fs, fsParams[[4]])
+  fselector$optimize(instance)
+
+
+  features <- as.vector(instance$result_feature_set)
+  data@preprocessed_train <- cbind(subset(data@preprocessed_train, select=features), data@preprocessed_train$time, data@preprocessed_train$status) # this needs to be cleaned up and be more dynamic
+  data@preprocessed_test <- cbind(subset(data@preprocessed_test, select=features), data@preprocessed_test$time, data@preprocessed_test$status)
+  # names of the column need to be fixed
+  names(data@preprocessed_train)[names(data@preprocessed_train) == "data@preprocessed_train$time"] <- "time"
+  names(data@preprocessed_train)[names(data@preprocessed_train) == "data@preprocessed_train$status"] <- "status"
+  names(data@preprocessed_test)[names(data@preprocessed_test) == "data@preprocessed_test$time"] <- "time"
+  names(data@preprocessed_test)[names(data@preprocessed_test) == "data@preprocessed_test$status"] <- "status"
+
+
+  task_tune <- TaskSurv$new("task_tune", data@preprocessed_train, time = "time", event = "status")
+
+
+  tune_space <- ParamSet$new(tuneGrid)
+
+  at=AutoTuner$new(learner=learner,
+                   resampling=do.call(mlr3::rsmp, trainParams[[1]]),
+                   measure = do.call(mlr3::msr, trainParams[[2]]),
+                   terminator = do.call(mlr3verse::trm, trainParams[[3]]),
+                   tuner=do.call(mlr3verse::tnr, trainParams[[4]]),
+                   search_space = tune_space
+  )
+  at$train(task_tune)
+
+  data@model <- at
+  pred_result <- at$predict_newdata(newdata = data@preprocessed_train)$score(measures)
+  data@cindex_train <- pred_result
+  return(data)
+}
+
+survival.rpart <- function(data = data, method = "rpart", fsParams, trainParams, tuneGrid, ...){
+
+  # this function might return an S4 object as data
+  # S4 object could contain: train data set, test data set, time column, event column, original data
+  data <- preprocess(data, "deseq-vst")
+
+  # double check if this actually works.
+  learner <- lrn("surv.rpart", id = method, ...) # will take parameters dynamically
+
+  task_fs = TaskSurv$new("task_fs", data@preprocessed_train, time = "time", event = "status")
+  measures = msrs(c("surv.cindex")) # this probably should change with a parameter.
+  # measures = msrs(c("survival.cindex"))
+
+
+  # fsParams is a list of lists that contain appropriate parameters for feature selection. These should be available in man page for the function.
+  # First element of this list is notable since it can/will contain multiple elements.
+  # May need to look into unlisting them from a list format.
+  # We can't simply dedicate more elements of the list because the list will contain varying amount of elements depending on the method chosen.
+
+  instance = FSelectInstanceSingleCrit$new(
+    task = task_fs,
+    learner = learner,
+    resampling = do.call(mlr3::rsmp, fsParams[[1]]),
+    measure = do.call(mlr3::msr, fsParams[[2]]),
+    terminator = do.call(mlr3verse::trm, fsParams[[3]])
+  )
+
+  fselector = do.call(mlr3verse::fs, fsParams[[4]])
+  fselector$optimize(instance)
+
+
+  features <- as.vector(instance$result_feature_set)
+  data@preprocessed_train <- cbind(subset(data@preprocessed_train, select=features), data@preprocessed_train$time, data@preprocessed_train$status) # this needs to be cleaned up and be more dynamic
+  data@preprocessed_test <- cbind(subset(data@preprocessed_test, select=features), data@preprocessed_test$time, data@preprocessed_test$status)
+  # names of the column need to be fixed
+  names(data@preprocessed_train)[names(data@preprocessed_train) == "data@preprocessed_train$time"] <- "time"
+  names(data@preprocessed_train)[names(data@preprocessed_train) == "data@preprocessed_train$status"] <- "status"
+  names(data@preprocessed_test)[names(data@preprocessed_test) == "data@preprocessed_test$time"] <- "time"
+  names(data@preprocessed_test)[names(data@preprocessed_test) == "data@preprocessed_test$status"] <- "status"
+
+
+  task_tune <- TaskSurv$new("task_tune", data@preprocessed_train, time = "time", event = "status")
+
+
+  tune_space <- ParamSet$new(tuneGrid)
+
+  at=AutoTuner$new(learner=learner,
+                   resampling=do.call(mlr3::rsmp, trainParams[[1]]),
+                   measure = do.call(mlr3::msr, trainParams[[2]]),
+                   terminator = do.call(mlr3verse::trm, trainParams[[3]]),
+                   tuner=do.call(mlr3verse::tnr, trainParams[[4]]),
+                   search_space = tune_space
+  )
+
+  at$train(task_tune)
+
+  data@model <- at
+  pred_result <- at$predict_newdata(newdata = data@preprocessed_train)$score(measures)
+  data@cindex_train <- pred_result
+  return(data)
 
 
 }
 
-surv.loghaz <- function(data = data, method = "loghaz", preProcessing = preProcessing, paramGrid, ...){
+survival.svm <- function(data = data, method = "svm", fsParams, trainParams, tuneGrid, ...){
 
   # this function might return an S4 object as data
   # S4 object could contain: train data set, test data set, time column, event column, original data
-  data <- preprocess(data, preProcessing)
+  data <- preprocess(data, "deseq-vst")
 
-  learner <- lrn("surv.loghaz", id = method, mstop = 100, ...) # will take parameters dynamically
+  # double check if this actually works.
+  learner <- lrn("surv.svm", id = method, ...) # will take parameters dynamically
 
-  task_fs = TaskSurv$new("task_fs", data@train, time = "time", event = "status")
+  task_fs = TaskSurv$new("task_fs", data@preprocessed_train, time = "time", event = "status")
+  measures = msrs(c("surv.cindex")) # this probably should change with a parameter.
+  # measures = msrs(c("survival.cindex"))
 
-  measures = msrs(c("surv.cindex"))
 
-  instance = FSelectInstanceSingleCrit$new( # will take parameters dynamically
+  # fsParams is a list of lists that contain appropriate parameters for feature selection. These should be available in man page for the function.
+  # First element of this list is notable since it can/will contain multiple elements.
+  # May need to look into unlisting them from a list format.
+  # We can't simply dedicate more elements of the list because the list will contain varying amount of elements depending on the method chosen.
+
+  instance = FSelectInstanceSingleCrit$new(
     task = task_fs,
     learner = learner,
-    resampling = rsmp("cv", folds = 5),
-    measure = msr("surv.cindex"),
-    terminator = trm("evals", n_evals = 5)
+    resampling = do.call(mlr3::rsmp, fsParams[[1]]),
+    measure = do.call(mlr3::msr, fsParams[[2]]),
+    terminator = do.call(mlr3verse::trm, fsParams[[3]])
   )
 
-  fselector = fs("random_search") # may take parameters
+  fselector = do.call(mlr3verse::fs, fsParams[[4]])
   fselector$optimize(instance)
 
+
   features <- as.vector(instance$result_feature_set)
-
-  data@train <- cbind(data@train[,1], subset(data@train, select=features), data@train$time, data@train$status) # this needs to be cleaned up and be more dynamic
-  data@test <- cbind(data@test[,1], subset(data@test, select=features), data@test$time, data@test$status)
+  data@preprocessed_train <- cbind(subset(data@preprocessed_train, select=features), data@preprocessed_train$time, data@preprocessed_train$status) # this needs to be cleaned up and be more dynamic
+  data@preprocessed_test <- cbind(subset(data@preprocessed_test, select=features), data@preprocessed_test$time, data@preprocessed_test$status)
   # names of the column need to be fixed
-  names(data@train)[names(data@train) == "data@train$time"] <- "time"
-  names(data@train)[names(data@train) == "data@train$status"] <- "status"
-  names(data@test)[names(data@test) == "data@test$time"] <- "time"
-  names(data@test)[names(data@test) == "data@test$status"] <- "status"
+  names(data@preprocessed_train)[names(data@preprocessed_train) == "data@preprocessed_train$time"] <- "time"
+  names(data@preprocessed_train)[names(data@preprocessed_train) == "data@preprocessed_train$status"] <- "status"
+  names(data@preprocessed_test)[names(data@preprocessed_test) == "data@preprocessed_test$time"] <- "time"
+  names(data@preprocessed_test)[names(data@preprocessed_test) == "data@preprocessed_test$status"] <- "status"
 
 
-  task_tune <- TaskSurv$new("task_tune", data@train, time = "time", event = "status")
+  task_tune <- TaskSurv$new("task_tune", data@preprocessed_train, time = "time", event = "status")
 
-  tune_ps = ParamSet$new(paramGrid)
+
+  tune_space <- ParamSet$new(tuneGrid)
 
   at=AutoTuner$new(learner=learner,
-                   resampling=rsmp("repeated_cv", repeats = 10, folds = 5),
-                   measure=msr("surv.cindex"),
-                   terminator=trm("evals", n_evals = 5),
-                   tuner=tnr("random_search"),
-                   search_space = tune_ps
+                   resampling=do.call(mlr3::rsmp, trainParams[[1]]),
+                   measure = do.call(mlr3::msr, trainParams[[2]]),
+                   terminator = do.call(mlr3verse::trm, trainParams[[3]]),
+                   tuner=do.call(mlr3verse::tnr, trainParams[[4]]),
+                   search_space = tune_space
   )
 
   at$train(task_tune)
-  pred_result <- at$predict_newdata(newdata = data@test)$score(measures)
 
-
-
-
+  data@model <- at
+  pred_result <- at$predict_newdata(newdata = data@preprocessed_train)$score(measures)
+  data@cindex_train <- pred_result
+  return(data)
 
 }
 
-surv.mboost <- function(data = data, method = "mboost", preProcessing = preProcessing, paramGrid, ...){
+survival.xgboost_dart <- function(data = data, method = "xgboost_dart", fsParams, trainParams, tuneGrid, ...){
 
   # this function might return an S4 object as data
   # S4 object could contain: train data set, test data set, time column, event column, original data
-  data <- preprocess(data, preProcessing)
+  data <- preprocess(data, "deseq-vst")
 
-  learner <- lrn("surv.mboost", id = method, mstop = 100, ...) # will take parameters dynamically
+  # double check if this actually works.
+  learner <- lrn("surv.xgboost", id = method, ...) # will take parameters dynamically
 
-  task_fs = TaskSurv$new("task_fs", data@train, time = "time", event = "status")
+  task_fs = TaskSurv$new("task_fs", data@preprocessed_train, time = "time", event = "status")
+  measures = msrs(c("surv.cindex")) # this probably should change with a parameter.
+  # measures = msrs(c("survival.cindex"))
 
-  measures = msrs(c("surv.cindex"))
 
-  instance = FSelectInstanceSingleCrit$new( # will take parameters dynamically
+  # fsParams is a list of lists that contain appropriate parameters for feature selection. These should be available in man page for the function.
+  # First element of this list is notable since it can/will contain multiple elements.
+  # May need to look into unlisting them from a list format.
+  # We can't simply dedicate more elements of the list because the list will contain varying amount of elements depending on the method chosen.
+
+  instance = FSelectInstanceSingleCrit$new(
     task = task_fs,
     learner = learner,
-    resampling = rsmp("cv", folds = 5),
-    measure = msr("surv.cindex"),
-    terminator = trm("evals", n_evals = 5)
+    resampling = do.call(mlr3::rsmp, fsParams[[1]]),
+    measure = do.call(mlr3::msr, fsParams[[2]]),
+    terminator = do.call(mlr3verse::trm, fsParams[[3]])
   )
 
-  fselector = fs("random_search") # may take parameters
+  fselector = do.call(mlr3verse::fs, fsParams[[4]])
   fselector$optimize(instance)
 
+
   features <- as.vector(instance$result_feature_set)
-
-  data@train <- cbind(data@train[,1], subset(data@train, select=features), data@train$time, data@train$status) # this needs to be cleaned up and be more dynamic
-  data@test <- cbind(data@test[,1], subset(data@test, select=features), data@test$time, data@test$status)
+  data@preprocessed_train <- cbind(subset(data@preprocessed_train, select=features), data@preprocessed_train$time, data@preprocessed_train$status) # this needs to be cleaned up and be more dynamic
+  data@preprocessed_test <- cbind(subset(data@preprocessed_test, select=features), data@preprocessed_test$time, data@preprocessed_test$status)
   # names of the column need to be fixed
-  names(data@train)[names(data@train) == "data@train$time"] <- "time"
-  names(data@train)[names(data@train) == "data@train$status"] <- "status"
-  names(data@test)[names(data@test) == "data@test$time"] <- "time"
-  names(data@test)[names(data@test) == "data@test$status"] <- "status"
+  names(data@preprocessed_train)[names(data@preprocessed_train) == "data@preprocessed_train$time"] <- "time"
+  names(data@preprocessed_train)[names(data@preprocessed_train) == "data@preprocessed_train$status"] <- "status"
+  names(data@preprocessed_test)[names(data@preprocessed_test) == "data@preprocessed_test$time"] <- "time"
+  names(data@preprocessed_test)[names(data@preprocessed_test) == "data@preprocessed_test$status"] <- "status"
 
 
-  task_tune <- TaskSurv$new("task_tune", data@train, time = "time", event = "status")
+  task_tune <- TaskSurv$new("task_tune", data@preprocessed_train, time = "time", event = "status")
 
-  tune_ps = ParamSet$new(paramGrid)
+
+  tune_space <- ParamSet$new(tuneGrid)
 
   at=AutoTuner$new(learner=learner,
-                   resampling=rsmp("repeated_cv", repeats = 10, folds = 5),
-                   measure=msr("surv.cindex"),
-                   terminator=trm("evals", n_evals = 5),
-                   tuner=tnr("random_search"),
-                   search_space = tune_ps
+                   resampling=do.call(mlr3::rsmp, trainParams[[1]]),
+                   measure = do.call(mlr3::msr, trainParams[[2]]),
+                   terminator = do.call(mlr3verse::trm, trainParams[[3]]),
+                   tuner=do.call(mlr3verse::tnr, trainParams[[4]]),
+                   search_space = tune_space
   )
 
   at$train(task_tune)
-  pred_result <- at$predict_newdata(newdata = data@test)$score(measures)
 
-
-
-
+  data@model <- at
+  pred_result <- at$predict_newdata(newdata = data@preprocessed_train)$score(measures)
+  data@cindex_train <- pred_result
+  return(data)
 
 }
 
-surv.obliqueRSF <- function(data = data, method = "obliqueRSF", preProcessing = preProcessing, paramGrid, ...){
+survival.xgboost_gblinear <- function(data = data, method = "xgboost_gblinear", fsParams, trainParams, tuneGrid, ...){
 
   # this function might return an S4 object as data
   # S4 object could contain: train data set, test data set, time column, event column, original data
-  data <- preprocess(data, preProcessing)
+  data <- preprocess(data, "deseq-vst")
 
-  learner <- lrn("surv.obliqueRSF", id = method, mstop = 100, ...) # will take parameters dynamically
+  # double check if this actually works.
+  learner <- lrn("surv.xgboost", id = method, ...) # will take parameters dynamically
 
-  task_fs = TaskSurv$new("task_fs", data@train, time = "time", event = "status")
+  task_fs = TaskSurv$new("task_fs", data@preprocessed_train, time = "time", event = "status")
+  measures = msrs(c("surv.cindex")) # this probably should change with a parameter.
+  # measures = msrs(c("survival.cindex"))
 
-  measures = msrs(c("surv.cindex"))
 
-  instance = FSelectInstanceSingleCrit$new( # will take parameters dynamically
+  # fsParams is a list of lists that contain appropriate parameters for feature selection. These should be available in man page for the function.
+  # First element of this list is notable since it can/will contain multiple elements.
+  # May need to look into unlisting them from a list format.
+  # We can't simply dedicate more elements of the list because the list will contain varying amount of elements depending on the method chosen.
+
+  instance = FSelectInstanceSingleCrit$new(
     task = task_fs,
     learner = learner,
-    resampling = rsmp("cv", folds = 5),
-    measure = msr("surv.cindex"),
-    terminator = trm("evals", n_evals = 5)
+    resampling = do.call(mlr3::rsmp, fsParams[[1]]),
+    measure = do.call(mlr3::msr, fsParams[[2]]),
+    terminator = do.call(mlr3verse::trm, fsParams[[3]])
   )
 
-  fselector = fs("random_search") # may take parameters
+  fselector = do.call(mlr3verse::fs, fsParams[[4]])
   fselector$optimize(instance)
 
+
   features <- as.vector(instance$result_feature_set)
-
-  data@train <- cbind(data@train[,1], subset(data@train, select=features), data@train$time, data@train$status) # this needs to be cleaned up and be more dynamic
-  data@test <- cbind(data@test[,1], subset(data@test, select=features), data@test$time, data@test$status)
+  data@preprocessed_train <- cbind(subset(data@preprocessed_train, select=features), data@preprocessed_train$time, data@preprocessed_train$status) # this needs to be cleaned up and be more dynamic
+  data@preprocessed_test <- cbind(subset(data@preprocessed_test, select=features), data@preprocessed_test$time, data@preprocessed_test$status)
   # names of the column need to be fixed
-  names(data@train)[names(data@train) == "data@train$time"] <- "time"
-  names(data@train)[names(data@train) == "data@train$status"] <- "status"
-  names(data@test)[names(data@test) == "data@test$time"] <- "time"
-  names(data@test)[names(data@test) == "data@test$status"] <- "status"
+  names(data@preprocessed_train)[names(data@preprocessed_train) == "data@preprocessed_train$time"] <- "time"
+  names(data@preprocessed_train)[names(data@preprocessed_train) == "data@preprocessed_train$status"] <- "status"
+  names(data@preprocessed_test)[names(data@preprocessed_test) == "data@preprocessed_test$time"] <- "time"
+  names(data@preprocessed_test)[names(data@preprocessed_test) == "data@preprocessed_test$status"] <- "status"
 
 
-  task_tune <- TaskSurv$new("task_tune", data@train, time = "time", event = "status")
+  task_tune <- TaskSurv$new("task_tune", data@preprocessed_train, time = "time", event = "status")
 
-  tune_ps = ParamSet$new(paramGrid)
+  tune_space <- ParamSet$new(tuneGrid)
 
   at=AutoTuner$new(learner=learner,
-                   resampling=rsmp("repeated_cv", repeats = 10, folds = 5),
-                   measure=msr("surv.cindex"),
-                   terminator=trm("evals", n_evals = 5),
-                   tuner=tnr("random_search"),
-                   search_space = tune_ps
+                   resampling=do.call(mlr3::rsmp, trainParams[[1]]),
+                   measure = do.call(mlr3::msr, trainParams[[2]]),
+                   terminator = do.call(mlr3verse::trm, trainParams[[3]]),
+                   tuner=do.call(mlr3verse::tnr, trainParams[[4]]),
+                   search_space = tune_space
+  )
+  at$train(task_tune)
+
+  data@model <- at
+  pred_result <- at$predict_newdata(newdata = data@preprocessed_train)$score(measures)
+  data@cindex_train <- pred_result
+  return(data)
+}
+
+survival.xgboost_gbtree <- function(data = data, method = "xgboost_gbtree", fsParams, trainParams, tuneGrid, ...){
+
+  # this function might return an S4 object as data
+  # S4 object could contain: train data set, test data set, time column, event column, original data
+  data <- preprocess(data, "deseq-vst")
+
+  # double check if this actually works.
+  learner <- lrn("surv.xgboost", id = method, ...) # will take parameters dynamically
+
+  task_fs = TaskSurv$new("task_fs", data@preprocessed_train, time = "time", event = "status")
+  measures = msrs(c("surv.cindex")) # this probably should change with a parameter.
+  # measures = msrs(c("survival.cindex"))
+
+
+  # fsParams is a list of lists that contain appropriate parameters for feature selection. These should be available in man page for the function.
+  # First element of this list is notable since it can/will contain multiple elements.
+  # May need to look into unlisting them from a list format.
+  # We can't simply dedicate more elements of the list because the list will contain varying amount of elements depending on the method chosen.
+
+  instance = FSelectInstanceSingleCrit$new(
+    task = task_fs,
+    learner = learner,
+    resampling = do.call(mlr3::rsmp, fsParams[[1]]),
+    measure = do.call(mlr3::msr, fsParams[[2]]),
+    terminator = do.call(mlr3verse::trm, fsParams[[3]])
+  )
+
+  fselector = do.call(mlr3verse::fs, fsParams[[4]])
+  fselector$optimize(instance)
+
+
+  features <- as.vector(instance$result_feature_set)
+  data@preprocessed_train <- cbind(subset(data@preprocessed_train, select=features), data@preprocessed_train$time, data@preprocessed_train$status) # this needs to be cleaned up and be more dynamic
+  data@preprocessed_test <- cbind(subset(data@preprocessed_test, select=features), data@preprocessed_test$time, data@preprocessed_test$status)
+  # names of the column need to be fixed
+  names(data@preprocessed_train)[names(data@preprocessed_train) == "data@preprocessed_train$time"] <- "time"
+  names(data@preprocessed_train)[names(data@preprocessed_train) == "data@preprocessed_train$status"] <- "status"
+  names(data@preprocessed_test)[names(data@preprocessed_test) == "data@preprocessed_test$time"] <- "time"
+  names(data@preprocessed_test)[names(data@preprocessed_test) == "data@preprocessed_test$status"] <- "status"
+
+
+  task_tune <- TaskSurv$new("task_tune", data@preprocessed_train, time = "time", event = "status")
+
+
+  tune_space <- ParamSet$new(tuneGrid)
+
+  at=AutoTuner$new(learner=learner,
+                   resampling=do.call(mlr3::rsmp, trainParams[[1]]),
+                   measure = do.call(mlr3::msr, trainParams[[2]]),
+                   terminator = do.call(mlr3verse::trm, trainParams[[3]]),
+                   tuner=do.call(mlr3verse::tnr, trainParams[[4]]),
+                   search_space = tune_space
   )
 
   at$train(task_tune)
-  pred_result <- at$predict_newdata(newdata = data@test)$score(measures)
+
+  data@model <- at
+  pred_result <- at$predict_newdata(newdata = data@preprocessed_train)$score(measures)
+  data@cindex_train <- pred_result
+  return(data)
+}
 
 
 
+survPredict.IPF <- function(model){
 
+  data_test <- model@preprocessed_test
+  newX <- data_test[,3:(ncol(data_test))]
+  newtimes <- model@times
+  time_grid <- sort(unique(newtimes))
+  time_grid <- c(0, time_grid)
+
+  trunc_time_grid <- time_grid
+
+  get_hazard_preds_IPF_bin <- function(index){
+    dummies <- matrix(0, ncol = length(trunc_time_grid), nrow = nrow(newX))
+    dummies[,index] <- 1
+    new_stacked <- cbind(dummies, newX)
+    risk_set_names <- paste0("risk_set_", seq(1, (length(trunc_time_grid))))
+    colnames(new_stacked)[1:length(trunc_time_grid)] <- risk_set_names
+    new_stacked <- as.matrix(new_stacked)
+    preds <- ipflasso.predict(object=model@model,Xtest=new_stacked)$probabilitiestest
+    return(preds)
+  }
+
+  hazard_preds_IPF_bin <- apply(X = matrix(1:length(trunc_time_grid)),
+                                FUN = get_hazard_preds_IPF_bin, MARGIN = 1)
+  get_surv_preds_IPF_bin <- function(t) {
+    if (sum(trunc_time_grid <= t) != 0) {
+      final_index <- max(which(trunc_time_grid <= t))
+      haz <- as.matrix(hazard_preds_IPF_bin[, 1:final_index])
+      anti_haz <- 1 - haz
+      surv <- apply(anti_haz, MARGIN = 1, prod)
+    }
+    else {
+      surv <- rep(1, nrow(hazard_preds_IPF_bin))
+    }
+    return(surv)
+  }
+  surv_preds_IPF_bin <- apply(X = matrix(newtimes), FUN = get_surv_preds_IPF_bin,
+                              MARGIN = 1)
+
+  interval_75 <- findInterval(quantile(trunc_time_grid)[4], trunc_time_grid)
+
+  surv_preds_IPF_bin_spectime <- surv_preds_IPF_bin[,interval_75]
+  result_IPF_bin <- rcorr.cens(surv_preds_IPF_bin_spectime, Surv(data_test$time, data_test$status))
+
+  model@cindex_test <- result_IPF_bin[[1]]
+  model@survHazards <- surv_preds_IPF_bin
+
+  return(model)
 
 }
 
-surv.pchazard <- function(data = data, method = "pchazard", preProcessing = preProcessing, paramGrid, ...){
+survPredict.PL <- function(model){
 
-  # this function might return an S4 object as data
-  # S4 object could contain: train data set, test data set, time column, event column, original data
-  data <- preprocess(data, preProcessing)
+  data_test <- model@preprocessed_test
+  newX <- data_test[,3:(ncol(data_test))]
+  newtimes <- model@times
+  time_grid <- sort(unique(newtimes))
+  time_grid <- c(0, time_grid)
+  trunc_time_grid <- time_grid
 
-  learner <- lrn("surv.pchazard", id = method, mstop = 100, ...) # will take parameters dynamically
+  get_hazard_preds_pl_bin <- function(index){
+    dummies <- matrix(0, ncol = length(trunc_time_grid), nrow = nrow(newX))
+    dummies[,index] <- 1
+    new_stacked <- cbind(dummies, newX)
+    risk_set_names <- paste0("risk_set_", seq(1, (length(trunc_time_grid))))
+    colnames(new_stacked)[1:length(trunc_time_grid)] <- risk_set_names
+    new_stacked <- as.matrix(new_stacked)
+    preds <- stats::predict(object = model@model, newdata = new_stacked, type = "response")
+    return(preds)
+  }
 
-  task_fs = TaskSurv$new("task_fs", data@train, time = "time", event = "status")
+  hazard_preds_pl_bin <- apply(X = matrix(1:length(trunc_time_grid)), FUN = get_hazard_preds_pl_bin, MARGIN = 1)
+  get_surv_preds_pl_bin <- function(t) {
+    if (sum(trunc_time_grid <= t) != 0) {
+      final_index <- max(which(trunc_time_grid <= t))
+      haz <- as.matrix(hazard_preds_pl_bin[, 1:final_index])
+      anti_haz <- 1 - haz
+      surv <- apply(anti_haz, MARGIN = 1, prod)
+    }
+    else {
+      surv <- rep(1, nrow(hazard_preds_pl_bin))
+    }
+    return(surv)
+  }
 
-  measures = msrs(c("surv.cindex"))
+  surv_preds_pl_bin <- apply(X = matrix(newtimes), FUN = get_surv_preds_pl_bin,
+                             MARGIN = 1)
 
-  instance = FSelectInstanceSingleCrit$new( # will take parameters dynamically
-    task = task_fs,
-    learner = learner,
-    resampling = rsmp("cv", folds = 5),
-    measure = msr("surv.cindex"),
-    terminator = trm("evals", n_evals = 5)
-  )
+  interval_75 <- findInterval(quantile(trunc_time_grid)[4], trunc_time_grid)
 
-  fselector = fs("random_search") # may take parameters
-  fselector$optimize(instance)
+  surv_preds_pl_bin_spectime <- surv_preds_pl_bin[,interval_75]
+  result_pl_bin<-rcorr.cens(surv_preds_pl_bin_spectime, Surv(data_test$time, data_test$status))
+  result_pl_bin[1]
 
-  features <- as.vector(instance$result_feature_set)
+  model@cindex_test <- result_pl_bin[[1]]
+  model@survHazards <- surv_preds_pl_bin
 
-  data@train <- cbind(data@train[,1], subset(data@train, select=features), data@train$time, data@train$status) # this needs to be cleaned up and be more dynamic
-  data@test <- cbind(data@test[,1], subset(data@test, select=features), data@test$time, data@test$status)
-  # names of the column need to be fixed
-  names(data@train)[names(data@train) == "data@train$time"] <- "time"
-  names(data@train)[names(data@train) == "data@train$status"] <- "status"
-  names(data@test)[names(data@test) == "data@test$time"] <- "time"
-  names(data@test)[names(data@test) == "data@test$status"] <- "status"
-
-
-  task_tune <- TaskSurv$new("task_tune", data@train, time = "time", event = "status")
-
-  tune_ps = ParamSet$new(paramGrid)
-
-  at=AutoTuner$new(learner=learner,
-                   resampling=rsmp("repeated_cv", repeats = 10, folds = 5),
-                   measure=msr("surv.cindex"),
-                   terminator=trm("evals", n_evals = 5),
-                   tuner=tnr("random_search"),
-                   search_space = tune_ps
-  )
-
-  at$train(task_tune)
-  pred_result <- at$predict_newdata(newdata = data@test)$score(measures)
-
-
-
-
+  return(model)
 
 }
 
-surv.penalized <- function(data = data, method = "penalized", preProcessing = preProcessing, paramGrid, ...){
-
-  # this function might return an S4 object as data
-  # S4 object could contain: train data set, test data set, time column, event column, original data
-  data <- preprocess(data, preProcessing)
-
-  learner <- lrn("surv.penalized", id = method, mstop = 100, ...) # will take parameters dynamically
-
-  task_fs = TaskSurv$new("task_fs", data@train, time = "time", event = "status")
-
-  measures = msrs(c("surv.cindex"))
-
-  instance = FSelectInstanceSingleCrit$new( # will take parameters dynamically
-    task = task_fs,
-    learner = learner,
-    resampling = rsmp("cv", folds = 5),
-    measure = msr("surv.cindex"),
-    terminator = trm("evals", n_evals = 5)
-  )
-
-  fselector = fs("random_search") # may take parameters
-  fselector$optimize(instance)
-
-  features <- as.vector(instance$result_feature_set)
-
-  data@train <- cbind(data@train[,1], subset(data@train, select=features), data@train$time, data@train$status) # this needs to be cleaned up and be more dynamic
-  data@test <- cbind(data@test[,1], subset(data@test, select=features), data@test$time, data@test$status)
-  # names of the column need to be fixed
-  names(data@train)[names(data@train) == "data@train$time"] <- "time"
-  names(data@train)[names(data@train) == "data@train$status"] <- "status"
-  names(data@test)[names(data@test) == "data@test$time"] <- "time"
-  names(data@test)[names(data@test) == "data@test$status"] <- "status"
-
-
-  task_tune <- TaskSurv$new("task_tune", data@train, time = "time", event = "status")
-
-  tune_ps = ParamSet$new(paramGrid)
-
-  at=AutoTuner$new(learner=learner,
-                   resampling=rsmp("repeated_cv", repeats = 10, folds = 5),
-                   measure=msr("surv.cindex"),
-                   terminator=trm("evals", n_evals = 5),
-                   tuner=tnr("random_search"),
-                   search_space = tune_ps
-  )
-
-  at$train(task_tune)
-  pred_result <- at$predict_newdata(newdata = data@test)$score(measures)
-
-
-
-
-
-}
-
-surv.ranger <- function(data = data, method = "ranger", preProcessing = preProcessing, paramGrid, ...){
-
-  # this function might return an S4 object as data
-  # S4 object could contain: train data set, test data set, time column, event column, original data
-  data <- preprocess(data, preProcessing)
-
-  learner <- lrn("surv.ranger", id = method, mstop = 100, ...) # will take parameters dynamically
-
-  task_fs = TaskSurv$new("task_fs", data@train, time = "time", event = "status")
-
-  measures = msrs(c("surv.cindex"))
-
-  instance = FSelectInstanceSingleCrit$new( # will take parameters dynamically
-    task = task_fs,
-    learner = learner,
-    resampling = rsmp("cv", folds = 5),
-    measure = msr("surv.cindex"),
-    terminator = trm("evals", n_evals = 5)
-  )
-
-  fselector = fs("random_search") # may take parameters
-  fselector$optimize(instance)
-
-  features <- as.vector(instance$result_feature_set)
-
-  data@train <- cbind(data@train[,1], subset(data@train, select=features), data@train$time, data@train$status) # this needs to be cleaned up and be more dynamic
-  data@test <- cbind(data@test[,1], subset(data@test, select=features), data@test$time, data@test$status)
-  # names of the column need to be fixed
-  names(data@train)[names(data@train) == "data@train$time"] <- "time"
-  names(data@train)[names(data@train) == "data@train$status"] <- "status"
-  names(data@test)[names(data@test) == "data@test$time"] <- "time"
-  names(data@test)[names(data@test) == "data@test$status"] <- "status"
-
-
-  task_tune <- TaskSurv$new("task_tune", data@train, time = "time", event = "status")
-
-  tune_ps = ParamSet$new(paramGrid)
-
-  at=AutoTuner$new(learner=learner,
-                   resampling=rsmp("repeated_cv", repeats = 10, folds = 5),
-                   measure=msr("surv.cindex"),
-                   terminator=trm("evals", n_evals = 5),
-                   tuner=tnr("random_search"),
-                   search_space = tune_ps
-  )
-
-  at$train(task_tune)
-  pred_result <- at$predict_newdata(newdata = data@test)$score(measures)
-
-
-
-
-
-}
-
-surv.rfsrc <- function(data = data, method = "rfsrc", preProcessing = preProcessing, paramGrid, ...){
-
-  # this function might return an S4 object as data
-  # S4 object could contain: train data set, test data set, time column, event column, original data
-  data <- preprocess(data, preProcessing)
-
-  learner <- lrn("surv.rfsrc", id = method, mstop = 100, ...) # will take parameters dynamically
-
-  task_fs = TaskSurv$new("task_fs", data@train, time = "time", event = "status")
-
-  measures = msrs(c("surv.cindex"))
-
-  instance = FSelectInstanceSingleCrit$new( # will take parameters dynamically
-    task = task_fs,
-    learner = learner,
-    resampling = rsmp("cv", folds = 5),
-    measure = msr("surv.cindex"),
-    terminator = trm("evals", n_evals = 5)
-  )
-
-  fselector = fs("random_search") # may take parameters
-  fselector$optimize(instance)
-
-  features <- as.vector(instance$result_feature_set)
-
-  data@train <- cbind(data@train[,1], subset(data@train, select=features), data@train$time, data@train$status) # this needs to be cleaned up and be more dynamic
-  data@test <- cbind(data@test[,1], subset(data@test, select=features), data@test$time, data@test$status)
-  # names of the column need to be fixed
-  names(data@train)[names(data@train) == "data@train$time"] <- "time"
-  names(data@train)[names(data@train) == "data@train$status"] <- "status"
-  names(data@test)[names(data@test) == "data@test$time"] <- "time"
-  names(data@test)[names(data@test) == "data@test$status"] <- "status"
-
-
-  task_tune <- TaskSurv$new("task_tune", data@train, time = "time", event = "status")
-
-  tune_ps = ParamSet$new(paramGrid)
-
-  at=AutoTuner$new(learner=learner,
-                   resampling=rsmp("repeated_cv", repeats = 10, folds = 5),
-                   measure=msr("surv.cindex"),
-                   terminator=trm("evals", n_evals = 5),
-                   tuner=tnr("random_search"),
-                   search_space = tune_ps
-  )
-
-  at$train(task_tune)
-  pred_result <- at$predict_newdata(newdata = data@test)$score(measures)
-
-
-
-
-
-}
-
-surv.ridge <- function(data = data, method = "ridge", preProcessing = preProcessing, paramGrid, ...){
-
-  # this function might return an S4 object as data
-  # S4 object could contain: train data set, test data set, time column, event column, original data
-  data <- preprocess(data, preProcessing)
-
-  learner <- lrn("surv.ridge", id = method, mstop = 100, ...) # will take parameters dynamically
-
-  task_fs = TaskSurv$new("task_fs", data@train, time = "time", event = "status")
-
-  measures = msrs(c("surv.cindex"))
-
-  instance = FSelectInstanceSingleCrit$new( # will take parameters dynamically
-    task = task_fs,
-    learner = learner,
-    resampling = rsmp("cv", folds = 5),
-    measure = msr("surv.cindex"),
-    terminator = trm("evals", n_evals = 5)
-  )
-
-  fselector = fs("random_search") # may take parameters
-  fselector$optimize(instance)
-
-  features <- as.vector(instance$result_feature_set)
-
-  data@train <- cbind(data@train[,1], subset(data@train, select=features), data@train$time, data@train$status) # this needs to be cleaned up and be more dynamic
-  data@test <- cbind(data@test[,1], subset(data@test, select=features), data@test$time, data@test$status)
-  # names of the column need to be fixed
-  names(data@train)[names(data@train) == "data@train$time"] <- "time"
-  names(data@train)[names(data@train) == "data@train$status"] <- "status"
-  names(data@test)[names(data@test) == "data@test$time"] <- "time"
-  names(data@test)[names(data@test) == "data@test$status"] <- "status"
-
-
-  task_tune <- TaskSurv$new("task_tune", data@train, time = "time", event = "status")
-
-  tune_ps = ParamSet$new(paramGrid)
-
-  at=AutoTuner$new(learner=learner,
-                   resampling=rsmp("repeated_cv", repeats = 10, folds = 5),
-                   measure=msr("surv.cindex"),
-                   terminator=trm("evals", n_evals = 5),
-                   tuner=tnr("random_search"),
-                   search_space = tune_ps
-  )
-
-  at$train(task_tune)
-  pred_result <- at$predict_newdata(newdata = data@test)$score(measures)
-
-
-
-
-
-}
-
-surv.rpart <- function(data = data, method = "rpart", preProcessing = preProcessing, paramGrid, ...){
-
-  # this function might return an S4 object as data
-  # S4 object could contain: train data set, test data set, time column, event column, original data
-  data <- preprocess(data, preProcessing)
-
-  learner <- lrn("surv.rpart", id = method, mstop = 100, ...) # will take parameters dynamically
-
-  task_fs = TaskSurv$new("task_fs", data@train, time = "time", event = "status")
-
-  measures = msrs(c("surv.cindex"))
-
-  instance = FSelectInstanceSingleCrit$new( # will take parameters dynamically
-    task = task_fs,
-    learner = learner,
-    resampling = rsmp("cv", folds = 5),
-    measure = msr("surv.cindex"),
-    terminator = trm("evals", n_evals = 5)
-  )
-
-  fselector = fs("random_search") # may take parameters
-  fselector$optimize(instance)
-
-  features <- as.vector(instance$result_feature_set)
-
-  data@train <- cbind(data@train[,1], subset(data@train, select=features), data@train$time, data@train$status) # this needs to be cleaned up and be more dynamic
-  data@test <- cbind(data@test[,1], subset(data@test, select=features), data@test$time, data@test$status)
-  # names of the column need to be fixed
-  names(data@train)[names(data@train) == "data@train$time"] <- "time"
-  names(data@train)[names(data@train) == "data@train$status"] <- "status"
-  names(data@test)[names(data@test) == "data@test$time"] <- "time"
-  names(data@test)[names(data@test) == "data@test$status"] <- "status"
-
-
-  task_tune <- TaskSurv$new("task_tune", data@train, time = "time", event = "status")
-
-  tune_ps = ParamSet$new(paramGrid)
-
-  at=AutoTuner$new(learner=learner,
-                   resampling=rsmp("repeated_cv", repeats = 10, folds = 5),
-                   measure=msr("surv.cindex"),
-                   terminator=trm("evals", n_evals = 5),
-                   tuner=tnr("random_search"),
-                   search_space = tune_ps
-  )
-
-  at$train(task_tune)
-  pred_result <- at$predict_newdata(newdata = data@test)$score(measures)
-
-
-
-
-
-}
-
-surv.svm <- function(data = data, method = "svm", preProcessing = preProcessing, paramGrid, ...){
-
-  # this function might return an S4 object as data
-  # S4 object could contain: train data set, test data set, time column, event column, original data
-  data <- preprocess(data, preProcessing)
-
-  learner <- lrn("surv.svm", id = method, mstop = 100, ...) # will take parameters dynamically
-
-  task_fs = TaskSurv$new("task_fs", data@train, time = "time", event = "status")
-
-  measures = msrs(c("surv.cindex"))
-
-  instance = FSelectInstanceSingleCrit$new( # will take parameters dynamically
-    task = task_fs,
-    learner = learner,
-    resampling = rsmp("cv", folds = 5),
-    measure = msr("surv.cindex"),
-    terminator = trm("evals", n_evals = 5)
-  )
-
-  fselector = fs("random_search") # may take parameters
-  fselector$optimize(instance)
-
-  features <- as.vector(instance$result_feature_set)
-
-  data@train <- cbind(data@train[,1], subset(data@train, select=features), data@train$time, data@train$status) # this needs to be cleaned up and be more dynamic
-  data@test <- cbind(data@test[,1], subset(data@test, select=features), data@test$time, data@test$status)
-  # names of the column need to be fixed
-  names(data@train)[names(data@train) == "data@train$time"] <- "time"
-  names(data@train)[names(data@train) == "data@train$status"] <- "status"
-  names(data@test)[names(data@test) == "data@test$time"] <- "time"
-  names(data@test)[names(data@test) == "data@test$status"] <- "status"
-
-
-  task_tune <- TaskSurv$new("task_tune", data@train, time = "time", event = "status")
-
-  tune_ps = ParamSet$new(paramGrid)
-
-  at=AutoTuner$new(learner=learner,
-                   resampling=rsmp("repeated_cv", repeats = 10, folds = 5),
-                   measure=msr("surv.cindex"),
-                   terminator=trm("evals", n_evals = 5),
-                   tuner=tnr("random_search"),
-                   search_space = tune_ps
-  )
-
-  at$train(task_tune)
-  pred_result <- at$predict_newdata(newdata = data@test)$score(measures)
-
-
-
-
-
-}
-
-surv.xgboost_dart <- function(data = data, method = "xgboost_dart", preProcessing = preProcessing, paramGrid, ...){
-
-  # this function might return an S4 object as data
-  # S4 object could contain: train data set, test data set, time column, event column, original data
-  data <- preprocess(data, preProcessing)
-
-  learner <- lrn("surv.xgboost_dart", id = method, mstop = 100, ...) # will take parameters dynamically
-
-  task_fs = TaskSurv$new("task_fs", data@train, time = "time", event = "status")
-
-  measures = msrs(c("surv.cindex"))
-
-  instance = FSelectInstanceSingleCrit$new( # will take parameters dynamically
-    task = task_fs,
-    learner = learner,
-    resampling = rsmp("cv", folds = 5),
-    measure = msr("surv.cindex"),
-    terminator = trm("evals", n_evals = 5)
-  )
-
-  fselector = fs("random_search") # may take parameters
-  fselector$optimize(instance)
-
-  features <- as.vector(instance$result_feature_set)
-
-  data@train <- cbind(data@train[,1], subset(data@train, select=features), data@train$time, data@train$status) # this needs to be cleaned up and be more dynamic
-  data@test <- cbind(data@test[,1], subset(data@test, select=features), data@test$time, data@test$status)
-  # names of the column need to be fixed
-  names(data@train)[names(data@train) == "data@train$time"] <- "time"
-  names(data@train)[names(data@train) == "data@train$status"] <- "status"
-  names(data@test)[names(data@test) == "data@test$time"] <- "time"
-  names(data@test)[names(data@test) == "data@test$status"] <- "status"
-
-
-  task_tune <- TaskSurv$new("task_tune", data@train, time = "time", event = "status")
-
-  tune_ps = ParamSet$new(paramGrid)
-
-  at=AutoTuner$new(learner=learner,
-                   resampling=rsmp("repeated_cv", repeats = 10, folds = 5),
-                   measure=msr("surv.cindex"),
-                   terminator=trm("evals", n_evals = 5),
-                   tuner=tnr("random_search"),
-                   search_space = tune_ps
-  )
-
-  at$train(task_tune)
-  pred_result <- at$predict_newdata(newdata = data@test)$score(measures)
-
-
-
-
-
-}
-
-surv.xgboost_gblinear <- function(data = data, method = "xgboost_gblinear", preProcessing = preProcessing, paramGrid, ...){
-
-  # this function might return an S4 object as data
-  # S4 object could contain: train data set, test data set, time column, event column, original data
-  data <- preprocess(data, preProcessing)
-
-  learner <- lrn("surv.xgboost_gblinear", id = method, mstop = 100, ...) # will take parameters dynamically
-
-  task_fs = TaskSurv$new("task_fs", data@train, time = "time", event = "status")
-
-  measures = msrs(c("surv.cindex"))
-
-  instance = FSelectInstanceSingleCrit$new( # will take parameters dynamically
-    task = task_fs,
-    learner = learner,
-    resampling = rsmp("cv", folds = 5),
-    measure = msr("surv.cindex"),
-    terminator = trm("evals", n_evals = 5)
-  )
-
-  fselector = fs("random_search") # may take parameters
-  fselector$optimize(instance)
-
-  features <- as.vector(instance$result_feature_set)
-
-  data@train <- cbind(data@train[,1], subset(data@train, select=features), data@train$time, data@train$status) # this needs to be cleaned up and be more dynamic
-  data@test <- cbind(data@test[,1], subset(data@test, select=features), data@test$time, data@test$status)
-  # names of the column need to be fixed
-  names(data@train)[names(data@train) == "data@train$time"] <- "time"
-  names(data@train)[names(data@train) == "data@train$status"] <- "status"
-  names(data@test)[names(data@test) == "data@test$time"] <- "time"
-  names(data@test)[names(data@test) == "data@test$status"] <- "status"
-
-
-  task_tune <- TaskSurv$new("task_tune", data@train, time = "time", event = "status")
-
-  tune_ps = ParamSet$new(paramGrid)
-
-  at=AutoTuner$new(learner=learner,
-                   resampling=rsmp("repeated_cv", repeats = 10, folds = 5),
-                   measure=msr("surv.cindex"),
-                   terminator=trm("evals", n_evals = 5),
-                   tuner=tnr("random_search"),
-                   search_space = tune_ps
-  )
-
-  at$train(task_tune)
-  pred_result <- at$predict_newdata(newdata = data@test)$score(measures)
-
-
-
-
-
-}
-
-surv.xgboost_gbtree <- function(data = data, method = "xgboost_gbtree", preProcessing = preProcessing, paramGrid, ...){
-
-  # this function might return an S4 object as data
-  # S4 object could contain: train data set, test data set, time column, event column, original data
-  data <- preprocess(data, preProcessing)
-
-  learner <- lrn("surv.xgboost_gbtree", id = method, mstop = 100, ...) # will take parameters dynamically
-
-  task_fs = TaskSurv$new("task_fs", data@train, time = "time", event = "status")
-
-  measures = msrs(c("surv.cindex"))
-
-  instance = FSelectInstanceSingleCrit$new( # will take parameters dynamically
-    task = task_fs,
-    learner = learner,
-    resampling = rsmp("cv", folds = 5),
-    measure = msr("surv.cindex"),
-    terminator = trm("evals", n_evals = 5)
-  )
-
-  fselector = fs("random_search") # may take parameters
-  fselector$optimize(instance)
-
-  features <- as.vector(instance$result_feature_set)
-
-  data@train <- cbind(data@train[,1], subset(data@train, select=features), data@train$time, data@train$status) # this needs to be cleaned up and be more dynamic
-  data@test <- cbind(data@test[,1], subset(data@test, select=features), data@test$time, data@test$status)
-  # names of the column need to be fixed
-  names(data@train)[names(data@train) == "data@train$time"] <- "time"
-  names(data@train)[names(data@train) == "data@train$status"] <- "status"
-  names(data@test)[names(data@test) == "data@test$time"] <- "time"
-  names(data@test)[names(data@test) == "data@test$status"] <- "status"
-
-
-  task_tune <- TaskSurv$new("task_tune", data@train, time = "time", event = "status")
-
-  tune_ps = ParamSet$new(paramGrid)
-
-  at=AutoTuner$new(learner=learner,
-                   resampling=rsmp("repeated_cv", repeats = 10, folds = 5),
-                   measure=msr("surv.cindex"),
-                   terminator=trm("evals", n_evals = 5),
-                   tuner=tnr("random_search"),
-                   search_space = tune_ps
-  )
-
-  at$train(task_tune)
-  pred_result <- at$predict_newdata(newdata = data@test)$score(measures)
-
-
-
-
+survPredict.MLR <- function(model){
+
+  time_grid <- sort(unique(model@preprocessed_train$time[model@preprocessed_train$status == 1]))
+  pred_result <- model@model$predict_newdata(newdata = model@preprocessed_test)
+  cindex_test <- pred_result$score(msrs(c("surv.cindex")))
+    survHazards <- 1 - pred_result$distr$cdf(time_grid)
+
+  model@cindex_test <- cindex_test
+  model@survHazards <- t(survHazards)
+  model@times <- time_grid
+  return(model)
 
 }
 

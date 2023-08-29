@@ -2,17 +2,37 @@ Package: MLSeqSurv
 Type: Package
 Title: Machine Learning Interface for Survival Analysis of RNA-Seq Data
 Version: 0.1.0
-Authors@R:  person("Ahu", "Cephe", email = "ahucephe@erciyes.edu.tr", role = c("aut", "cre")), 
-person("Necla", "Kochan", email = "necla.kayaalp@gmail.com", role = c("aut", "cre")), 
-person("Ahmet", "Sezgin", email = "asezginalt@gmail.com", role = c("aut", "cre")), 
-person("Erdem", "Karabulut", email = "ekarabul@hacettepe.edu.tr", role = c("aut", "cre")),
-person("Gökmen", "Zararsız", email = "gokmenzararsiz@erciyes.edu.tr", role = c("aut", "cre")),
-            
-
+Authors@R: c(person("Ahu", "Cephe", email = "ahucephe@erciyes.edu.tr", role = c("aut")), 
+  person("Necla", "Kochan", email = "necla.kayaalp@gmail.com", role = c("aut")), 
+  person("Ahmet", "Sezgin", email = "asezginalt@gmail.com", role = c("aut", "cre")), 
+  person("Erdem", "Karabulut", email = "ekarabul@hacettepe.edu.tr", role = c("aut")),
+  person("Gökmen", "Zararsız", email = "gokmenzararsiz@erciyes.edu.tr", role = c("aut")))
 Maintainer: Ahmet Sezgin <asezginalt@gmail.com>
 Description: More about what it does (maybe more than one line)
-    Use four spaces when indenting paragraphs within the Description.
 License: GPL (>= 3)
 Encoding: UTF-8
 LazyData: true
-
+Imports:
+  mlr3,
+  mlr3proba,
+  mlr3tuningspaces,
+  dplyr,
+  survivalmodels,
+  survival,
+  survminer,
+  edgeR,
+  DESeq2,
+  data.table,
+  caret,
+  RSBID,
+  MASS,
+  limma,
+  prioritylasso,
+  ipflasso,
+  Hmisc,
+  ggplot2,
+  gridExtra,
+  methods
+Suggests: 
+  testthat (>= 3.0.0)
+Config/testthat/edition: 3

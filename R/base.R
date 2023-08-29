@@ -87,9 +87,6 @@ survival <- function(data, method = c("ipflasso", "prioritylasso", "blackboost",
   else if (method == "deepsurv"){
     survival.deepsurv(data = data, method = "deepsurv", fsParams, trainParams, tuneGrid, ...)
   }
-  else if (method == "elasticnet"){
-    survival.elasticnet(data = data, method = "elasticnet", fsParams, trainParams, tuneGrid, ...)
-  }
   else if (method == "gamboost"){
     survival.gamboost(data = data, method = "gamboost", fsParams, trainParams, tuneGrid, ...)
   }
@@ -99,8 +96,8 @@ survival <- function(data, method = c("ipflasso", "prioritylasso", "blackboost",
   else if (method == "glmboost"){
     survival.glmboost(data = data, method = "glmboost", fsParams, trainParams, tuneGrid, ...)
   }
-  else if (method == "lasso"){
-    survival.lasso(data = data, method = "lasso", fsParams, trainParams, tuneGrid, ...)
+  else if (method == "glmnet"){
+    survival.glmnet(data = data, method = "glmnet", fsParams, trainParams, tuneGrid, ...)
   }
   else if (method == "loghaz"){
     survival.loghaz(data = data, method = "loghaz", fsParams, trainParams, tuneGrid, ...)
@@ -123,23 +120,14 @@ survival <- function(data, method = c("ipflasso", "prioritylasso", "blackboost",
   else if (method == "rfsrc"){
     survival.rfsrc(data = data, method = "rfsrc", fsParams, trainParams, tuneGrid, ...)
   }
-  else if (method == "ridge"){
-    survival.ridge(data = data, method = "ridge", fsParams, trainParams, tuneGrid, ...)
-  }
   else if (method == "rpart"){
     survival.rpart(data = data, method = "rpart", fsParams, trainParams, tuneGrid, ...)
   }
   else if (method == "svm"){
     survival.svm(data = data, method = "svm", fsParams, trainParams, tuneGrid, ...)
   }
-  else if (method == "xgboost_dart"){
-    survival.xgboost_dart(data = data, method = "xgboost_dart", fsParams, trainParams, tuneGrid, ...)
-  }
-  else if (method == "xgboost_gblinear"){
-    survival.xgboost_gblinear(data = data, method = "xgboost_gblinear", fsParams, trainParams, tuneGrid, ...)
-  }
-  else if (method == "xgboost_gbtree"){
-    survival.xgboost_gbtree(data = data, method = "xgboost_gbtree", fsParams, trainParams, tuneGrid, ...)
+  else if (method == "xgboost"){
+    xgboost(data = data, method = "xgboost", fsParams, trainParams, tuneGrid, ...)
   }
   else if (method == "ipflasso"){
     survival.ipflasso(data = data, method = "ipflasso", balancer = balancer, trainParams = trainParams, ...)
@@ -229,9 +217,9 @@ exampleParamDf <- function(){
   row1 <- c("numeric", "nu", 0, 1)
   example_df <- data.frame(type = row1[1], paramid = row1[2], lower = row1[3], upper = row1[4])
 
-  example_df <- rbind(test, row1)
-  example_df <- rbind(test, row1)
-  example_df <- rbind(test, row1)
+  example_df <- rbind(example_df, row1)
+  example_df <- rbind(example_df, row1)
+  example_df <- rbind(example_df, row1)
 
   example_df$levels <- list(NA, c("coxph","weibull"), NA, NA)
   example_df$type <- list("numeric", "character", "integer", "logical")

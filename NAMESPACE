@@ -1,1 +1,5 @@
 exportPattern("^[[:alpha:]]+")
+importFrom("methods", "new")
+importFrom("stats", "approxfun", "contr.sum", "contrasts<-", "family",
+           "hat", "lm.wfit", "lowess", "median", "model.matrix",
+           "predict", "quantile", "sd", "time", "weighted.mean")
